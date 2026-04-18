@@ -13,12 +13,15 @@ if ('serviceWorker' in navigator) {
   });
 }
 
+import { Analytics } from "@vercel/analytics/react"
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ThemeProvider>
       <LoadingBarProvider>
         <BrowserRouter>
           <App />
+          <Analytics />
         </BrowserRouter>
       </LoadingBarProvider>
     </ThemeProvider>
