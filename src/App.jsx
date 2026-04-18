@@ -17,7 +17,7 @@ function App() {
   return (
     <div className="bg-[#f7f6f2] dark:bg-[#0a0a0a] min-h-screen text-gray-900 dark:text-white font-sans transition-colors duration-200">
       <CustomCursor />
-      <AnimatePresence mode="wait">
+      <AnimatePresence mode="popLayout">
         <Routes location={location} key={location.pathname}>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
