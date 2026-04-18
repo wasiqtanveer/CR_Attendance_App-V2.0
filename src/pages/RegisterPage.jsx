@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { CalendarCheck } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import DoodleBackground from '../components/DoodleBackground';
 
@@ -53,6 +54,14 @@ export default function RegisterPage() {
         className="relative z-10 bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-8 w-full max-w-sm"
       >
         <div className="flex flex-col items-center">
+          <motion.div
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+            className="bg-[#b9ff66] border-2 border-black rounded-2xl p-4 flex items-center justify-center mb-6 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
+          >
+            <CalendarCheck size={32} className="text-black" />
+          </motion.div>
           <div className="bg-[#b9ff66] text-black text-xs font-bold px-3 py-1 rounded-full border border-black inline-block mb-4">
             New Account
           </div>

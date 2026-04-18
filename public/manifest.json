@@ -1,6 +1,6 @@
 {
-  "name": "CR Attendance",
-  "short_name": "CR Attend",
+  "name": "CR Attendance App",
+  "short_name": "CR Attend App",
   "description": "Class representative attendance tracking made simple.",
   "start_url": "/dashboard",
   "display": "standalone",

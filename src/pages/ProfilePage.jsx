@@ -469,7 +469,7 @@ export default function ProfilePage() {
             <div className="border-t-2 border-dashed border-gray-100 dark:border-gray-800 my-4" />
             
             <p className="text-sm font-medium text-gray-500 dark:text-gray-400 leading-relaxed">
-              CR Attendance was built around my personal need, but as fellow class reps found it useful, I thought why not make it practical. Built with React, Tailwind CSS, Framer Motion and Supabase.
+              CR Attendance App was built around my personal need, but as fellow class reps found it useful, I thought why not make it practical. Built with React, Tailwind CSS, Framer Motion and Supabase.
             </p>
             
             <div className="flex gap-2 flex-wrap mt-4">

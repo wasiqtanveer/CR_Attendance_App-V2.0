@@ -199,7 +199,7 @@ export default function Layout({ children }) {
               <CalendarCheck size={18} className="text-black" />
             </div>
             <span className="font-black text-lg text-gray-900 dark:text-white ml-3">
-              CR Attendance
+              CR Attendance App
             </span>
           </motion.div>
 
