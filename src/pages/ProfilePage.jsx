@@ -204,21 +204,36 @@ export default function ProfilePage() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -12 }}
-            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+            transition={{ duration: 0.4, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
           >
-        <div className="bg-[#b9ff66] border-2 border-black text-black text-xs font-bold px-3 py-1 rounded-full inline-block mb-3">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.25 }}
+          className="bg-[#b9ff66] border border-black text-black text-xs font-bold px-3 py-1 rounded-full inline-block mb-3"
+        >
           Account
-        </div>
-        <h1 className="text-4xl font-black text-gray-900 dark:text-white tracking-tight">
+        </motion.div>
+        <motion.h1
+          initial={{ opacity: 0, x: -16 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+          className="text-4xl font-black text-gray-900 dark:text-white tracking-tight"
+        >
           Profile
-        </h1>
+        </motion.h1>
         <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-2">
           Manage your account
         </p>
 
         <div className="w-full mt-10 flex flex-col gap-6">
           {/* Section 1 - Account Info */}
-          <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 shadow-sm">
+          <motion.div 
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
+            className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 shadow-sm"
+          >
             <h2 className="text-xs font-black uppercase tracking-wide text-gray-400 mb-5">
               Account Info
             </h2>
@@ -375,7 +390,12 @@ export default function ProfilePage() {
           </div>
 
           {/* Section 2 - Preferences */}
-          <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 shadow-sm">
+          <motion.div 
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
+            className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 shadow-sm"
+          >
             <h2 className="text-xs font-black uppercase tracking-wide text-gray-400 mb-5">
               Preferences
             </h2>
@@ -406,7 +426,12 @@ export default function ProfilePage() {
           </div>
 
           {/* Section 3 - Danger Zone */}
-          <div className="bg-white dark:bg-[#111111] border-2 border-red-400 dark:border-red-600 rounded-2xl p-6 shadow-sm">
+          <motion.div 
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            className="bg-white dark:bg-[#111111] border-2 border-red-400 dark:border-red-600 rounded-2xl p-6 shadow-sm"
+          >
             <h2 className="text-xs font-black uppercase tracking-wide text-red-400 mb-5">
               Danger Zone
             </h2>
