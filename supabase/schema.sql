@@ -51,7 +51,7 @@ create or replace function handle_new_user()
 returns trigger as $$
 begin
   insert into profiles (id, full_name, email)
-  values (new.id, new.raw_user_meta_data->>'full_name', new.email);
+  values (new.id, coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', 'Unknown User'), new.email);
   return new;
 end;
 $$ language plpgsql security definer;

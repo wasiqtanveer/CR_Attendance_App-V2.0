@@ -34,9 +34,15 @@ export default function Layout({ children }) {
             .single();
           
           if (error && error.code === 'PGRST116') {
-            const metaName = session.user.user_metadata?.full_name || 'CR';
+            const metaName = session.user.user_metadata?.full_name || session.user.user_metadata?.name || 'CR';
             setFullName(metaName);
             localStorage.setItem('cr_name', metaName);
+            // Auto-create missing profile
+            await supabase.from('profiles').insert({
+              id: session.user.id,
+              full_name: metaName,
+              email: session.user.email
+            });
           } else if (error || !data || !data.full_name) {
             setFullName('CR');
             localStorage.setItem('cr_name', 'CR');
