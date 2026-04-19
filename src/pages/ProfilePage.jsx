@@ -387,7 +387,7 @@ export default function ProfilePage() {
                 )}
               </AnimatePresence>
             </div>
-          </div>
+          </motion.div>
 
           {/* Section 2 - Preferences */}
           <motion.div 
@@ -423,7 +423,7 @@ export default function ProfilePage() {
                 </motion.div>
               </div>
             </div>
-          </div>
+          </motion.div>
 
           {/* Section 3 - Danger Zone */}
           <motion.div 
@@ -470,7 +470,7 @@ export default function ProfilePage() {
                 </motion.button>
               </div>
             </div>
-          </div>
+          </motion.div>
 
           <motion.div
             initial={{ opacity: 0, y: 12 }}
