@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabase';
 import { useLoadingBar } from '../context/LoadingBarContext';
 import { useCountUp } from '../hooks/useCountUp';
 import Layout from '../components/Layout';
+import { playDelete } from '../lib/sounds';
 
 // ─── Animated counter — wraps hook so it can be used per-card ───────────────
 function CountUp({ value }) {
@@ -48,6 +49,15 @@ export default function DashboardPage() {
   const [newCourseName, setNewCourseName] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [mobileDeletingCourse, setMobileDeletingCourse] = useState(null);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.matchMedia('(pointer: coarse)').matches);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
   const [errorMsg, setErrorMsg] = useState(null);
   const [showToast, setShowToast] = useState(false);
   const [courseFilter, setCourseFilter] = useState('');
@@ -173,7 +183,7 @@ export default function DashboardPage() {
   const handleDeleteCourse = (id) => {
     const courseToDelete = courses.find(c => c.id === id);
     if (!courseToDelete) return;
-
+    playDelete();
     // Clear any in-flight undo timer from a previous delete, but force execute it!
     if (undoToast?.timer) {
       clearTimeout(undoToast.timer);
@@ -366,7 +376,7 @@ export default function DashboardPage() {
                       {course.name}
                     </h3>
 
-                    {deletingId === course.id ? (
+                    {deletingId === course.id && !isMobile ? (
                       <motion.div
                         initial={{ opacity: 0, scale: 0.8, x: 10 }}
                         animate={{ opacity: 1, scale: 1, x: 0 }}
@@ -389,9 +399,9 @@ export default function DashboardPage() {
                       </motion.div>
                     ) : (
                       <motion.button
-                        whileHover={{ scale: 1.05 }}
+                        whileHover={!isMobile ? { scale: 1.05 } : {}}
                         whileTap={{ scale: 0.95 }}
-                        onClick={() => setDeletingId(course.id)}
+                        onClick={() => isMobile ? setMobileDeletingCourse(course) : setDeletingId(course.id)}
                         className="border-2 border-black dark:border-white rounded-xl p-2 hover:bg-red-500 hover:border-red-500 hover:text-white transition-all duration-150 text-gray-900 dark:text-white ml-2 flex-shrink-0"
                       >
                         <Trash2 size={16} />
@@ -465,8 +475,53 @@ export default function DashboardPage() {
         </AnimatePresence>
       </motion.div>
 
-      {/* ── Toasts ──────────────────────────────────────────────────── */}
+      {/* ── Mobile Modals & Toasts ─────────────────────────────────── */}
       <AnimatePresence>
+        {mobileDeletingCourse && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setMobileDeletingCourse(null)}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 shadow-2xl flex flex-col items-center text-center"
+            >
+              <div className="flex items-center justify-center w-14 h-14 rounded-full bg-red-100 dark:bg-red-900/30 text-red-500 mb-4 border-2 border-red-500">
+                <Trash2 size={24} strokeWidth={2.5} />
+              </div>
+              <h3 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Delete Course?</h3>
+              <p className="text-gray-600 dark:text-gray-400 mb-8 font-medium">
+                Are you sure you want to delete <br/>
+                <span className="text-gray-900 dark:text-gray-200 font-bold">"{mobileDeletingCourse.name}"</span>?<br/>
+                This will move it to the trash.
+              </p>
+              <div className="flex gap-3 w-full">
+                <button
+                  onClick={() => setMobileDeletingCourse(null)}
+                  className="flex-1 py-3.5 px-4 bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white font-black rounded-xl border-2 border-transparent hover:border-gray-300 dark:hover:border-gray-700 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    handleDeleteCourse(mobileDeletingCourse.id);
+                    setMobileDeletingCourse(null);
+                  }}
+                  className="flex-1 py-3.5 px-4 bg-red-500 text-white font-black rounded-xl border-2 border-black hover:bg-red-600 transition-colors"
+                >
+                  Delete
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
         {showToast && (
           <motion.div
             key="added"

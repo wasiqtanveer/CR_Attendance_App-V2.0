@@ -32,7 +32,7 @@ export default function RegisterPage() {
         data: {
           full_name: fullName,
         },
-        emailRedirectTo: `${window.location.origin}/login`,
+        emailRedirectTo: `${import.meta.env.VITE_APP_URL || window.location.origin}/login`,
       },
     });
 
@@ -45,7 +45,7 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="relative min-h-screen bg-[#f7f6f2] dark:bg-[#0a0a0a] flex items-center justify-center px-4 py-12">
+    <div className="relative min-h-screen bg-[#f7f6f2] dark:bg-[#0a0a0a] flex items-center justify-center px-4">
       <DoodleBackground />
 
       <motion.div

@@ -10,6 +10,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useLoadingBar } from '../context/LoadingBarContext';
 import Layout from '../components/Layout';
 import AnimatedNumber from '../components/AnimatedNumber';
+import { playDelete } from '../lib/sounds';
 
 export default function HistoryPage() {
   const { id: courseId } = useParams();
@@ -22,7 +23,16 @@ export default function HistoryPage() {
   const [expandedDates, setExpandedDates] = useState(new Set());
   const [showToast, setShowToast] = useState(false);
   const [confirmDeleteDate, setConfirmDeleteDate] = useState(null);
+  const [mobileDeleteDate, setMobileDeleteDate] = useState(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.matchMedia('(pointer: coarse)').matches);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   const fetcher = async () => {
     try {
@@ -464,6 +474,7 @@ export default function HistoryPage() {
   const handleDeleteDate = async (e, date) => {
     e.stopPropagation();
     setDeleteLoading(true);
+    playDelete();
     try {
       const { error } = await supabase
         .from('attendance')
@@ -717,7 +728,7 @@ export default function HistoryPage() {
                     </div>
                     <div className="flex items-center gap-2">
                       <AnimatePresence mode="popLayout">
-                        {confirmDeleteDate === date ? (
+                        {confirmDeleteDate === date && !isMobile ? (
                           <motion.div 
                             key="confirm"
                             initial={{ opacity: 0, scale: 0.8, x: 20 }}
@@ -751,9 +762,16 @@ export default function HistoryPage() {
                             animate={{ opacity: 1, scale: 1 }}
                             exit={{ opacity: 0, scale: 0.8 }}
                             transition={{ duration: 0.2 }}
-                            whileHover={{ scale: 1.05 }}
+                            whileHover={!isMobile ? { scale: 1.05 } : {}}
                             whileTap={{ scale: 0.95 }}
-                            onClick={(e) => { e.stopPropagation(); setConfirmDeleteDate(date); }}
+                            onClick={(e) => { 
+                              e.stopPropagation(); 
+                              if (isMobile) {
+                                setMobileDeleteDate(date);
+                              } else {
+                                setConfirmDeleteDate(date);
+                              }
+                            }}
                             className="rounded-xl flex-shrink-0 bg-red-50 dark:bg-red-950/30 border-2 border-red-200 dark:border-red-900/50 text-red-500 hover:border-red-500 transition-all flex items-center justify-center h-[32px] w-[44px]"
                             title="Delete Day"
                           >
@@ -863,7 +881,7 @@ export default function HistoryPage() {
       {/* Export buttons */}
       <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3">
         <motion.button
-          whileHover={{ scale: 1.04 }}
+          whileHover={!isMobile ? { scale: 1.04 } : {}}
           whileTap={{ scale: 0.97 }}
           onClick={handleExport}
           className="bg-[#b9ff66] border-2 border-black rounded-2xl px-6 py-3 font-black text-black text-sm flex items-center gap-2 shadow-md hover:bg-black hover:text-[#b9ff66] transition-all"
@@ -873,7 +891,53 @@ export default function HistoryPage() {
         </motion.button>
       </div>
 
+      {/* ── Mobile Modals & Toasts ─────────────────────────────────── */}
       <AnimatePresence>
+        {mobileDeleteDate && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setMobileDeleteDate(null)}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 shadow-2xl flex flex-col items-center text-center"
+            >
+              <div className="flex items-center justify-center w-14 h-14 rounded-full bg-red-100 dark:bg-red-900/30 text-red-500 mb-4 border-2 border-red-500">
+                <Trash2 size={24} strokeWidth={2.5} />
+              </div>
+              <h3 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Delete Record?</h3>
+              <p className="text-gray-600 dark:text-gray-400 mb-8 font-medium">
+                Are you sure you want to clear attendance for<br/>
+                <span className="text-gray-900 dark:text-gray-200 font-bold">{new Date(mobileDeleteDate).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</span>?
+              </p>
+              <div className="flex gap-3 w-full">
+                <button
+                  onClick={() => setMobileDeleteDate(null)}
+                  disabled={deleteLoading}
+                  className="flex-1 py-3.5 px-4 bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white font-black rounded-xl border-2 border-transparent hover:border-gray-300 dark:hover:border-gray-700 transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={(e) => {
+                    handleDeleteDate(e, mobileDeleteDate).then(() => setMobileDeleteDate(null));
+                  }}
+                  disabled={deleteLoading}
+                  className="flex-1 py-3.5 px-4 bg-red-500 text-white font-black rounded-xl border-2 border-black hover:bg-red-600 transition-colors flex items-center justify-center disabled:opacity-80"
+                >
+                  {deleteLoading ? <span className="animate-pulse">...</span> : 'Delete'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
         {showToast && (
           <motion.div
             initial={{ opacity: 0, y: 16 }}
