@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Trash2, Users, Upload } from 'lucide-react';
+import { ArrowLeft, Trash2, Users, Upload, X } from 'lucide-react';
 import * as XLSX from 'xlsx-js-style';
 import useSWR from 'swr';
 import { supabase } from '../lib/supabase';
@@ -51,7 +51,24 @@ export default function StudentsPage() {
   const [bulkText, setBulkText] = useState('');
   const [isBulkSubmitting, setIsBulkSubmitting] = useState(false);
 
+  // Add from Existing Course State
+  const [showExistingCourseModal, setShowExistingCourseModal] = useState(false);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [selectedSourceCourseId, setSelectedSourceCourseId] = useState('');
+  const [sourceStudents, setSourceStudents] = useState([]);
+  const [sourceStudentsLoading, setSourceStudentsLoading] = useState(false);
+  const [selectedStudentIds, setSelectedStudentIds] = useState(new Set());
+  const [isAddingExisting, setIsAddingExisting] = useState(false);
+
   const { data, error: swrError, mutate, isLoading, isValidating } = useSWR(`students_${courseId}`, fetcher);
+
+  // Fetch available courses instantly using SWR so it stays fresh when courses are deleted elsewhere
+  const { data: rawAvailableCourses } = useSWR('available_courses', async () => {
+    const { data } = await supabase.from('courses').select('id, name').order('name');
+    return data || [];
+  }, { refreshInterval: 2000 }); // poll every 2s for quick updates
+
+  const availableCourses = rawAvailableCourses ? rawAvailableCourses.filter(c => c.id !== courseId) : [];
 
   const studLoadingBarActive = useRef(false);
   useEffect(() => {
@@ -63,6 +80,61 @@ export default function StudentsPage() {
   const students = data?.students || [];
   const loading = isLoading;
   const error = swrError?.message || localError;
+
+  useEffect(() => {
+    if (showExistingCourseModal && availableCourses.length > 0 && !selectedSourceCourseId) {
+      setSelectedSourceCourseId(availableCourses[0].id);
+    }
+  }, [showExistingCourseModal, availableCourses, selectedSourceCourseId]);
+
+  useEffect(() => {
+    if (!selectedSourceCourseId) return;
+    
+    async function fetchSourceStudents() {
+      setSourceStudentsLoading(true);
+      const { data, error } = await supabase
+        .from('students')
+        .select('*')
+        .eq('course_id', selectedSourceCourseId)
+        .order('name');
+        
+      if (!error && data) {
+        setSourceStudents(data);
+      }
+      setSourceStudentsLoading(false);
+      setSelectedStudentIds(new Set()); 
+    }
+    
+    if (showExistingCourseModal) {
+      fetchSourceStudents();
+    }
+  }, [selectedSourceCourseId, showExistingCourseModal]);
+
+  const handleAddExistingStudents = async () => {
+    if (selectedStudentIds.size === 0) return;
+    setIsAddingExisting(true);
+    setLocalError(null);
+    
+    const studentsToAdd = sourceStudents
+      .filter(s => selectedStudentIds.has(s.id))
+      .map(s => ({
+        name: s.name,
+        reg_number: s.reg_number,
+        course_id: courseId
+      }));
+      
+    if (studentsToAdd.length > 0) {
+      const { error } = await supabase.from('students').insert(studentsToAdd);
+      if (error) {
+        setLocalError(error.message);
+      } else {
+        setShowExistingCourseModal(false);
+        await mutate();
+      }
+    }
+    setIsAddingExisting(false);
+  };
+
 
   const handleAddSingle = async (e) => {
     e.preventDefault();
@@ -251,23 +323,25 @@ export default function StudentsPage() {
           </div>
         )}
 
-        <div>
-          {courseName && (
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.8 }} 
-              animate={{ opacity: 1, scale: 1 }} 
-              transition={{ duration: 0.25 }}
-              className="bg-[#b9ff66] border border-black text-black text-xs font-bold px-3 py-1 rounded-full inline-block mb-3"
-            >
-              {courseName}
-            </motion.div>
-          )}
-          <h1 className="text-4xl font-black text-gray-900 dark:text-white tracking-tight">
-            Students
-          </h1>
-          <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-2 mb-8">
-            <AnimatedNumber value={students.length} /> {students.length === 1 ? 'student enrolled' : 'students enrolled'}
-          </p>
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-8">
+          <div>
+            {courseName && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.8 }} 
+                animate={{ opacity: 1, scale: 1 }} 
+                transition={{ duration: 0.25 }}
+                className="bg-[#b9ff66] border border-black text-black text-xs font-bold px-3 py-1 rounded-full inline-block mb-3"
+              >
+                {courseName}
+              </motion.div>
+            )}
+            <h1 className="text-4xl font-black text-gray-900 dark:text-white tracking-tight">
+              Students
+            </h1>
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-2 mb-0">
+              <AnimatedNumber value={students.length} /> {students.length === 1 ? 'student enrolled' : 'students enrolled'}
+            </p>
+          </div>
         </div>
 
         {/* Two Column Layout */}
@@ -327,6 +401,24 @@ export default function StudentsPage() {
                 {isBulkSubmitting ? 'Adding...' : 'Bulk Add →'}
               </motion.button>
             </form>
+
+            {availableCourses.length > 0 && (
+              <>
+                <div className="border-t-2 border-dashed border-gray-200 dark:border-gray-700 my-6" />
+                <h2 className="text-xs font-black uppercase tracking-wide text-gray-900 dark:text-white mb-4">
+                  From existing course
+                </h2>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => setShowExistingCourseModal(true)}
+                  className="w-full flex items-center justify-center gap-2 bg-white dark:bg-[#111111] text-gray-900 dark:text-white border-2 border-black dark:border-white text-sm font-bold px-4 py-3 rounded-xl hover:bg-[#b9ff66] hover:text-black hover:border-black transition-colors"
+                >
+                  <Users size={18} />
+                  Select Students to Import
+                </motion.button>
+              </>
+            )}
           </div>
 
           {/* Right Column - Import from File */}
@@ -337,11 +429,11 @@ export default function StudentsPage() {
             
             <div 
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-8 text-center cursor-pointer hover:border-[#b9ff66] transition-colors flex flex-col items-center justify-center mb-4"
+              className="border-2 border-dashed border-black/40 dark:border-white/40 rounded-xl p-8 text-center cursor-pointer hover:border-black dark:hover:border-[#b9ff66] hover:bg-[#b9ff66]/10 dark:hover:bg-[#b9ff66]/5 transition-all flex flex-col items-center justify-center mb-4 group"
             >
-              <Upload size={24} className="text-gray-400 mb-2" />
-              <p className="text-sm font-medium text-gray-400 mt-2">Click to upload or drag & drop</p>
-              <p className="text-xs text-gray-400 mt-1">.xlsx or .csv — Name in column A, Reg Number in column B</p>
+              <Upload size={24} className="text-gray-900 dark:text-white group-hover:text-black dark:group-hover:text-[#b9ff66] transition-colors mb-2 group-hover:-translate-y-1" />
+              <p className="text-sm font-bold text-gray-900 dark:text-white mt-2 group-hover:text-black dark:group-hover:text-[#b9ff66]">Click to upload or drag & drop</p>
+              <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mt-1">.xlsx or .csv — Name in column A, Reg Number in column B</p>
             </div>
             
             <input
@@ -463,6 +555,199 @@ export default function StudentsPage() {
           </div>
         )}
       </motion.div>
+
+      {/* Add from Existing Course Modal */}
+      <AnimatePresence>
+        {showExistingCourseModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowExistingCourseModal(false)}
+            className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center p-4 overflow-y-auto"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 w-full max-w-lg max-h-[90vh] flex flex-col"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xs font-black uppercase tracking-wide text-gray-900 dark:text-white">
+                  Add from Existing Course
+                </h2>
+                <button
+                  onClick={() => setShowExistingCourseModal(false)}
+                  className="text-gray-500 hover:text-black dark:hover:text-white transition-colors"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              {localError && (
+                <div className="bg-red-100 border-2 border-red-500 text-red-700 font-bold px-4 py-2 rounded-xl text-sm mb-4">
+                  {localError}
+                </div>
+              )}
+
+              <div className="flex flex-col gap-4 mb-6">
+                <div className="flex flex-col gap-2 relative">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-400">Select Source Course</span>
+                  <div 
+                    onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                    className="w-full px-4 py-3 rounded-xl border-2 border-black dark:border-white bg-white dark:bg-[#222222] text-gray-900 dark:text-white font-bold text-sm cursor-pointer flex justify-between items-center transition-colors"
+                  >
+                    <span>{availableCourses.find(c => c.id === selectedSourceCourseId)?.name || "Select Course"}</span>
+                    <div className={`transition-transform duration-200 ${isDropdownOpen ? 'rotate-180' : ''}`}>
+                      <div className="w-0 h-0 border-l-[5px] border-r-[5px] border-t-[5px] border-t-black border-l-transparent border-r-transparent dark:border-t-white" />
+                    </div>
+                  </div>
+                  
+                  <AnimatePresence>
+                    {isDropdownOpen && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -10 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute top-full left-0 right-0 mt-2 bg-white dark:bg-[#222222] border-2 border-black dark:border-white rounded-xl z-50 overflow-hidden"
+                      >
+                        <div className="max-h-48 overflow-y-auto">
+                          {availableCourses.map(c => (
+                            <div
+                              key={c.id}
+                              onClick={() => {
+                                setSelectedSourceCourseId(c.id);
+                                setIsDropdownOpen(false);
+                              }}
+                              className={`px-4 py-3 text-sm font-bold cursor-pointer transition-colors ${
+                                selectedSourceCourseId === c.id 
+                                  ? 'bg-[#b9ff66] text-black border-b-2 border-black last:border-b-0' 
+                                  : 'text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-gray-800 border-b border-gray-100 dark:border-gray-800 last:border-0'
+                              }`}
+                            >
+                              {c.name}
+                            </div>
+                          ))}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
+
+                <div className="flex-1 overflow-y-auto mb-2 pr-2 -mr-2 h-[350px] min-h-[350px]">
+                  {sourceStudentsLoading ? (
+                    <div className="flex justify-center items-center h-full text-gray-500">
+                      <div className="animate-pulse flex gap-2">
+                        <div className="w-3 h-3 bg-[#b9ff66] border-2 border-black rounded-full" />
+                        <div className="w-3 h-3 bg-[#b9ff66] border-2 border-black rounded-full" style={{ animationDelay: '0.2s' }} />
+                        <div className="w-3 h-3 bg-[#b9ff66] border-2 border-black rounded-full" style={{ animationDelay: '0.4s' }} />
+                      </div>
+                    </div>
+                  ) : sourceStudents.length === 0 ? (
+                    <p className="text-sm border-2 border-dashed border-gray-300 dark:border-gray-700 bg-white/50 dark:bg-[#111111]/50 rounded-2xl p-8 text-gray-500 font-bold text-center my-0">No students found in this course.</p>
+                  ) : (
+                    <div className="flex flex-col gap-3">
+                      <label className="flex flex-row items-center gap-4 p-4 rounded-xl border-2 border-dashed border-black dark:border-white cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 transition-colors bg-white dark:bg-[#222222] flex-shrink-0 group">
+                        <div className="relative flex items-center justify-center">
+                          <input
+                            type="checkbox"
+                            className="peer w-6 h-6 rounded border-2 border-black dark:border-white appearance-none checked:bg-[#b9ff66] checked:border-black transition-colors cursor-pointer"
+                            checked={selectedStudentIds.size > 0 && selectedStudentIds.size === sourceStudents.filter(s => !students.some(es => es.reg_number === s.reg_number)).length}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                const validIds = sourceStudents
+                                  .filter(s => !students.some(es => es.reg_number === s.reg_number))
+                                  .map(s => s.id);
+                                setSelectedStudentIds(new Set(validIds));
+                              } else {
+                                setSelectedStudentIds(new Set());
+                              }
+                            }}
+                          />
+                          <svg className="absolute w-4 h-4 text-black opacity-0 peer-checked:opacity-100 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                        </div>
+                      <span className="text-sm font-black text-gray-900 dark:text-white uppercase tracking-wide">Select All Valid Students</span>
+                    </label>
+
+                    {sourceStudents.map(student => {
+                      const alreadyExists = students.some(es => es.reg_number === student.reg_number);
+                      const isSelected = selectedStudentIds.has(student.id);
+
+                      return (
+                        <label 
+                          key={student.id}
+                          className={`flex flex-row items-center justify-between p-4 rounded-xl border-2 transition-all flex-shrink-0 group ${
+                            alreadyExists 
+                              ? 'border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#1a1a1a] opacity-60 cursor-not-allowed' 
+                              : isSelected
+                                ? 'border-black dark:border-[#b9ff66] bg-[#b9ff66]/10 dark:bg-[#b9ff66]/5 cursor-pointer shadow-[4px_4px_0px_rgba(0,0,0,1)] dark:shadow-[4px_4px_0px_rgba(185,255,102,0.2)] -translate-y-[2px]'
+                                : 'border-black/20 dark:border-white/20 bg-white dark:bg-[#222222] hover:border-black dark:hover:border-white cursor-pointer'
+                          }`}
+                        >
+                          <div className="flex items-center gap-4">
+                            <div className="relative flex items-center justify-center">
+                              <input 
+                                type="checkbox"
+                                disabled={alreadyExists}
+                                checked={isSelected}
+                                onChange={(e) => {
+                                  const newSet = new Set(selectedStudentIds);
+                                  if (e.target.checked) newSet.add(student.id);
+                                  else newSet.delete(student.id);
+                                  setSelectedStudentIds(newSet);
+                                }}
+                                className="peer w-6 h-6 rounded border-2 border-black dark:border-white appearance-none checked:bg-[#b9ff66] checked:border-black transition-colors cursor-pointer disabled:cursor-not-allowed disabled:border-gray-300 dark:disabled:border-gray-700"
+                              />
+                              <svg className="absolute w-4 h-4 text-black opacity-0 peer-checked:opacity-100 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="text-sm font-bold text-gray-900 dark:text-white truncate max-w-[150px] sm:max-w-[240px]">
+                                {student.name}
+                              </span>
+                              <span className="text-xs font-semibold text-gray-500">
+                                {student.reg_number}
+                              </span>
+                            </div>
+                          </div>
+                          {alreadyExists && (
+                            <span className="text-[10px] font-black px-2 py-1 bg-gray-200 dark:bg-gray-800 text-gray-500 uppercase tracking-widest rounded-md border border-gray-300 dark:border-gray-700">
+                              Added
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-3 mt-4 pt-4 border-t-2 border-black/10 dark:border-white/10">
+                <button
+                  type="button"
+                  onClick={() => setShowExistingCourseModal(false)}
+                  className="px-5 py-2.5 rounded-xl text-sm font-bold text-gray-500 hover:text-black dark:hover:text-white transition-colors border-2 border-transparent hover:border-gray-200 dark:hover:border-gray-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAddExistingStudents}
+                  disabled={isAddingExisting || selectedStudentIds.size === 0}
+                  className="bg-[#b9ff66] border-2 border-black text-black px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-black hover:text-[#b9ff66] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 min-w-[140px] shadow-[2px_2px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-y-[2px] disabled:hover:translate-y-0 disabled:hover:shadow-[2px_2px_0px_rgba(0,0,0,1)] disabled:hover:bg-[#b9ff66] disabled:hover:text-black"
+                >
+                  {isAddingExisting ? (
+                    <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    `Add ${selectedStudentIds.size > 0 ? `(${selectedStudentIds.size})` : ''}`
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </Layout>
   );
 }

@@ -119,7 +119,7 @@ export default function CustomCursor() {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.4, ease: "easeOut" }}
             className="fixed top-0 left-0 pointer-events-none z-[9998] w-6 h-6 rounded-full border-2 border-[#b9ff66]"
-            style={{ transform: `translate(calc(${r.x}px - 50%), calc(${r.y}px - 50%))` }}
+            style={{ left: r.x - 12, top: r.y - 12 }}
           />
         ))}
       </AnimatePresence>
