@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" width="1200" height="360" role="img" aria-label="CR Attendance — roll call, minus the paper">
+  <defs>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#1c1c1c"/>
+    </pattern>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#b9ff66" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#b9ff66" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .h  { font-family: Inter, 'Segoe UI', system-ui, -apple-system, sans-serif; font-weight: 900; }
+      .b  { font-family: Inter, 'Segoe UI', system-ui, -apple-system, sans-serif; font-weight: 600; }
+      .m  { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-weight: 600; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="360" fill="#0a0a0a"/>
+  <rect width="1200" height="360" fill="url(#dots)"/>
+  <circle cx="980" cy="70" r="300" fill="url(#glow)"/>
+
+  <!-- ── left column ─────────────────────────────────────────────── -->
+  <g>
+    <rect x="64" y="52" width="58" height="8" fill="#b9ff66"/>
+    <text class="h" x="64" y="140" font-size="76" fill="#b9ff66" letter-spacing="-3">CR ATTENDANCE</text>
+    <text class="b" x="66" y="182" font-size="25" fill="#f7f6f2" opacity="0.82">Roll call, minus the paper.</text>
+    <text class="m" x="66" y="216" font-size="14" fill="#6f6f6f" letter-spacing="0.5">30 students &#183; 30 seconds &#183; one tap each</text>
+
+    <g class="m" font-size="12" letter-spacing="1.4" fill="#b9ff66">
+      <rect x="64"  y="252" width="118" height="30" rx="15" fill="none" stroke="#2f3d1e"/>
+      <text x="123" y="271" text-anchor="middle">INSTALLABLE</text>
+      <rect x="194" y="252" width="150" height="30" rx="15" fill="none" stroke="#2f3d1e"/>
+      <text x="269" y="271" text-anchor="middle">OFFLINE DRAFTS</text>
+      <rect x="356" y="252" width="140" height="30" rx="15" fill="none" stroke="#2f3d1e"/>
+      <text x="426" y="271" text-anchor="middle">EXCEL EXPORT</text>
+    </g>
+  </g>
+
+  <!-- ── right: the product itself ────────────────────────────────── -->
+  <g>
+    <rect x="712" y="66" width="436" height="254" rx="16" fill="#b9ff66" opacity="0.22"/>
+    <rect x="702" y="56" width="436" height="254" rx="16" fill="#111111" stroke="#b9ff66" stroke-width="2"/>
+
+    <text class="m" x="726" y="90" font-size="12" fill="#b9ff66" letter-spacing="2.2">DATA STRUCTURES &#183; TODAY</text>
+    <line x1="726" y1="104" x2="1114" y2="104" stroke="#282828"/>
+
+    <g class="b" font-size="15" fill="#d4d4d4">
+      <text x="726" y="139">Ahmed Raza</text>
+      <text x="726" y="177">Bilal Khan</text>
+      <text x="726" y="215">Hina Malik</text>
+      <text x="726" y="253">Usman Tariq</text>
+    </g>
+
+    <!-- present -->
+    <g>
+      <circle cx="1092" cy="134" r="13" fill="#b9ff66"/>
+      <path d="M1085 134 l5 5 l9 -10" fill="none" stroke="#0a0a0a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="1092" cy="172" r="13" fill="#b9ff66"/>
+      <path d="M1085 172 l5 5 l9 -10" fill="none" stroke="#0a0a0a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="1092" cy="248" r="13" fill="#b9ff66"/>
+      <path d="M1085 248 l5 5 l9 -10" fill="none" stroke="#0a0a0a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <!-- absent -->
+    <g>
+      <circle cx="1092" cy="210" r="13" fill="#1a1a1a" stroke="#ff5c5c" stroke-width="2"/>
+      <path d="M1087 205 l10 10 M1097 205 l-10 10" stroke="#ff5c5c" stroke-width="2.4" stroke-linecap="round"/>
+    </g>
+
+    <line x1="726" y1="276" x2="1114" y2="276" stroke="#282828"/>
+    <text class="m" x="726" y="298" font-size="12" fill="#7a7a7a">28 / 30 PRESENT</text>
+    <text class="m" x="1114" y="298" font-size="12" fill="#b9ff66" text-anchor="end">93%</text>
+  </g>
+</svg>
