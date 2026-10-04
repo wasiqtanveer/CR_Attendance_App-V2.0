@@ -1,23 +1,23 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
-import LoginPage from './pages/LoginPage';
-import RegisterPage from './pages/RegisterPage';
-import ResetPasswordPage from './pages/ResetPasswordPage';
-import DashboardPage from './pages/DashboardPage';
-import StudentsPage from './pages/StudentsPage';
-import AttendancePage from './pages/AttendancePage';
-import HistoryPage from './pages/HistoryPage';
-import ProfilePage from './pages/ProfilePage';
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const RegisterPage = lazy(() => import('./pages/RegisterPage'));
+const ResetPasswordPage = lazy(() => import('./pages/ResetPasswordPage'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const StudentsPage = lazy(() => import('./pages/StudentsPage'));
+const AttendancePage = lazy(() => import('./pages/AttendancePage'));
+const HistoryPage = lazy(() => import('./pages/HistoryPage'));
+const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 import ProtectedRoute from './components/ProtectedRoute';
-import CustomCursor from './components/CustomCursor';
 
 function App() {
   const location = useLocation();
 
   return (
     <div className="bg-[#f7f6f2] dark:bg-[#0a0a0a] min-h-screen text-gray-900 dark:text-white font-sans transition-colors duration-200">
-      <CustomCursor />
       <AnimatePresence mode="popLayout">
+        <Suspense fallback={<div className="flex min-h-screen items-center justify-center" role="status">Loading page…</div>}>
         <Routes location={location} key={location.pathname}>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
@@ -70,6 +70,7 @@ function App() {
 
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
+        </Suspense>
       </AnimatePresence>
     </div>
   );

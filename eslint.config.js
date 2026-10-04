@@ -23,7 +23,11 @@ export default defineConfig([
       },
     },
     rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]|^motion$', argsIgnorePattern: '^[A-Z_]' }],
     },
+  },
+  {
+    files: ['src/context/*.jsx'],
+    rules: { 'react-refresh/only-export-components': 'off' },
   },
 ])

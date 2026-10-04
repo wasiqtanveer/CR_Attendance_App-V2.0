@@ -1,20 +1,55 @@
-import { useEffect, useState } from 'react';
-import { useNavigate, useLocation, Link } from 'react-router-dom';
-import { CalendarCheck, Menu, X, LogOut } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { useLocation, Link, NavLink } from 'react-router-dom';
+import { LayoutGrid, ClipboardCheck, Users, History as HistoryIcon, UserRound } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { useTheme } from '../context/ThemeContext';
 import { useLoadingBar } from '../context/LoadingBarContext';
 import { motion, AnimatePresence } from 'framer-motion';
 
+function initials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return 'CR';
+  return (parts[0][0] + (parts.length > 1 ? parts.at(-1)[0] : '')).toUpperCase();
+}
+
+function TopLink({ to, active, children }) {
+  return (
+    <Link to={to}
+      className={`relative rounded-lg px-3 py-2 text-sm font-bold transition-colors ${active
+        ? 'text-black dark:text-white'
+        : 'text-gray-600 hover:text-black dark:text-gray-300 dark:hover:text-white'}`}>
+      {children}
+      {active && <span aria-hidden="true" className="absolute inset-x-3 -bottom-[3px] h-[3px] rounded-full bg-[#b9ff66]" />}
+    </Link>
+  );
+}
+
+function BottomTab({ to, icon: Icon, label, end }) {
+  return (
+    <NavLink to={to} end={end}
+      className={({ isActive }) => `group flex min-w-0 flex-1 flex-col items-center justify-center gap-1 pt-2 pb-1.5 text-[11px] font-bold transition-colors ${isActive
+        ? 'text-black dark:text-white'
+        : 'text-gray-500 dark:text-gray-400'}`}>
+      {({ isActive }) => (
+        <>
+          <span className={`flex h-8 w-14 items-center justify-center rounded-full transition-colors ${isActive
+            ? 'bg-[#b9ff66] text-black'
+            : 'group-active:bg-black/5 dark:group-active:bg-white/10'}`}>
+            <Icon size={20} strokeWidth={isActive ? 2.5 : 2} />
+          </span>
+          <span className="truncate">{label}</span>
+        </>
+      )}
+    </NavLink>
+  );
+}
+
 export default function Layout({ children }) {
   const [fullName, setFullName] = useState(() => localStorage.getItem('cr_name') || '');
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
-  const { theme, toggleTheme } = useTheme();
-  const isDarkMode = theme === 'dark';
   const loadingBar = useLoadingBar();
-  const navigate = useNavigate();
   const location = useLocation();
+  const courseId = location.pathname.match(/^\/courses\/([^/]+)/)?.[1];
+  const onCourses = location.pathname.startsWith('/dashboard') || Boolean(courseId);
 
   useEffect(() => {
     async function getProfile() {
@@ -32,7 +67,7 @@ export default function Layout({ children }) {
             .select('full_name')
             .eq('id', session.user.id)
             .single();
-          
+
           if (error && error.code === 'PGRST116') {
             const metaName = session.user.user_metadata?.full_name || session.user.user_metadata?.name || 'CR';
             setFullName(metaName);
@@ -51,7 +86,7 @@ export default function Layout({ children }) {
             localStorage.setItem('cr_name', data.full_name);
           }
         }
-      } catch (err) {
+      } catch {
         if (!localStorage.getItem('cr_name')) setFullName('CR');
       }
     }
@@ -62,54 +97,30 @@ export default function Layout({ children }) {
     return () => window.removeEventListener('cr_name_updated', handleNameSync);
   }, []);
 
-  const handleSignOut = async () => {
+  const handleSignOut = useCallback(async () => {
     setIsSigningOut(true);
-    // Small delay for the overlay to animate in before we sign out
-    await new Promise(resolve => setTimeout(resolve, 1800));
-    await supabase.auth.signOut();
+    const { error } = await supabase.auth.signOut();
+    if (error) { setIsSigningOut(false); return; }
     localStorage.removeItem('cr_name');
     window.location.href = '/login';
-  };
+  }, []);
 
   useEffect(() => {
     window.addEventListener('cr_sign_out', handleSignOut);
     return () => window.removeEventListener('cr_sign_out', handleSignOut);
-  }, []);
+  }, [handleSignOut]);
 
-  const NavLinks = ({ mobile = false }) => (
-    <>
-      <Link 
-        to="/dashboard"
-        onClick={() => mobile && setIsMobileMenuOpen(false)}
-        className={`text-sm font-bold px-1 transition-colors ${
-          location.pathname.startsWith('/dashboard') || location.pathname.startsWith('/courses')
-            ? 'border-b-2 border-[#b9ff66] text-black dark:text-white' 
-            : 'text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white'
-        }`}
-      >
-        Dashboard
-      </Link>
-      <Link 
-        to="/profile"
-        onClick={() => mobile && setIsMobileMenuOpen(false)}
-        className={`text-sm font-bold px-1 transition-colors ${
-          location.pathname === '/profile' 
-            ? 'border-b-2 border-[#b9ff66] text-black dark:text-white' 
-            : 'text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white'
-        }`}
-      >
-        Profile
-      </Link>
-    </>
-  );
-
-  useEffect(() => {
-    if (isMobileMenuOpen) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = '';
-    }
-  }, [isMobileMenuOpen]);
+  const tabs = courseId
+    ? [
+        { to: '/dashboard', icon: LayoutGrid, label: 'Courses' },
+        { to: `/courses/${courseId}/attendance`, icon: ClipboardCheck, label: 'Roll call' },
+        { to: `/courses/${courseId}/students`, icon: Users, label: 'Students' },
+        { to: `/courses/${courseId}/history`, icon: HistoryIcon, label: 'History' },
+      ]
+    : [
+        { to: '/dashboard', icon: LayoutGrid, label: 'Courses' },
+        { to: '/profile', icon: UserRound, label: 'Profile' },
+      ];
 
   return (
     <>
@@ -122,55 +133,38 @@ export default function Layout({ children }) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35 }}
-            className="fixed inset-0 z-[200] flex flex-col items-center justify-center bg-[#f7f6f2] dark:bg-[#0a0a0a]"
+            className="fixed inset-0 z-[200] flex flex-col items-center justify-center bg-[#f7f6f2] px-6 dark:bg-[#0a0a0a]"
           >
-            {/* Pulsing logo */}
-            <motion.div
+            <motion.img
+              src="/favicon.svg" alt=""
               initial={{ scale: 0.6, opacity: 0 }}
               animate={{ scale: [0.6, 1.08, 1], opacity: 1 }}
               transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-              className="mb-8"
-            >
-              <motion.div
-                animate={{ boxShadow: ['0 0 0px #b9ff66', '0 0 32px #b9ff66', '0 0 0px #b9ff66'] }}
-                transition={{ repeat: Infinity, duration: 1.6, ease: 'easeInOut' }}
-                className="bg-[#b9ff66] border-2 border-black rounded-2xl p-5 flex items-center justify-center"
-              >
-                <CalendarCheck size={40} className="text-black" />
-              </motion.div>
-            </motion.div>
-
-            {/* Goodbye text */}
+              className="mb-8 h-20 w-20"
+            />
             <motion.div
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.25, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
               className="text-center"
             >
-              <p className="text-xs font-black uppercase tracking-[0.25em] text-[#b9ff66] mb-3">
-                Signing out
-              </p>
-              <h2 className="text-4xl font-black text-gray-900 dark:text-white tracking-tight mb-2">
-                Goodbye{fullName ? `,` : '!'}{fullName && (
-                  <span className="text-[#b9ff66]"> {fullName.split(' ')[0]}</span>
-                )}{fullName ? '!' : ''}
+              <h2 className="mb-2 text-4xl font-extrabold text-gray-900 dark:text-white">
+                Goodbye{fullName ? `, ${fullName.split(' ')[0]}` : ''}!
               </h2>
-              <p className="text-sm font-medium text-gray-400 dark:text-gray-500">
-                Your attendance records are safe. See you soon ✦
+              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
+                Signing you out. Your attendance records are safe.
               </p>
             </motion.div>
-
-            {/* Animated dots */}
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ delay: 0.5 }}
-              className="flex items-center gap-2 mt-10"
+              className="mt-10 flex items-center gap-2"
             >
               {[0, 1, 2].map(i => (
                 <motion.div
                   key={i}
-                  className="w-2 h-2 rounded-full bg-[#b9ff66] border border-black"
+                  className="h-2 w-2 rounded-full border border-black bg-[#b9ff66]"
                   animate={{ scale: [1, 1.5, 1], opacity: [0.4, 1, 0.4] }}
                   transition={{ repeat: Infinity, duration: 1.2, delay: i * 0.2, ease: 'easeInOut' }}
                 />
@@ -180,87 +174,53 @@ export default function Layout({ children }) {
         )}
       </AnimatePresence>
 
-      <div className="fixed top-0 left-0 right-0 z-50 bg-[#f7f6f2] dark:bg-[#0a0a0a] border-b-2 border-black dark:border-white">
-        {/* Top loading progress bar */}
+      <header className="fixed inset-x-0 top-0 z-50 border-b-2 border-black bg-[#f7f6f2]/95 pt-[env(safe-area-inset-top)] backdrop-blur-md dark:border-white/80 dark:bg-[#0a0a0a]/95">
         <AnimatePresence>
           {loadingBar?.visible && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute top-0 left-0 h-[4px] bg-[#b9ff66] border-b border-r border-black dark:border-[#b9ff66]/30 z-[70] transition-[width] duration-300 ease-out"
+              className="absolute left-0 top-0 z-[70] h-[3px] bg-[#6b9d28] transition-[width] duration-300 ease-out dark:bg-[#b9ff66]"
               style={{ width: `${loadingBar.progress}%` }}
             />
           )}
         </AnimatePresence>
-        {/* relative so absolute nav-links center to this container, not the fixed outer div */}
-        <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between relative">
-          <motion.div 
-            whileHover={{ rotate: -4, scale: 1.08 }} 
-            transition={{ duration: 0.15 }}
-            className="flex items-center cursor-pointer"
-            onClick={() => navigate('/dashboard')}
-          >
-            <div className="bg-[#b9ff66] border-2 border-black rounded-lg p-1.5 flex items-center justify-center">
-              <CalendarCheck size={18} className="text-black" />
-            </div>
-            <span className="font-black text-lg text-gray-900 dark:text-white ml-3">
-              CR Attendance App
+        <div className="relative mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6 md:h-16">
+          <Link to="/dashboard" className="-ml-1 flex items-center gap-2.5 rounded-xl px-1 py-1">
+            <img src="/favicon.svg" alt="" className="h-8 w-8 md:h-9 md:w-9" />
+            <span className="font-display text-[17px] font-extrabold tracking-tight text-gray-900 dark:text-white md:text-lg">
+              CR Attendance
             </span>
-          </motion.div>
+          </Link>
 
-          <div className="hidden md:flex items-center justify-center gap-6 absolute left-1/2 -translate-x-1/2">
-            <NavLinks />
-          </div>
+          <nav aria-label="Main" className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-2 md:flex">
+            <TopLink to="/dashboard" active={onCourses}>Courses</TopLink>
+            <TopLink to="/profile" active={location.pathname === '/profile'}>Profile</TopLink>
+          </nav>
 
-          <div className="flex items-center gap-2">
-            {fullName && (
-              <Link to="/profile" className="hidden sm:block bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-full px-3 py-1 text-xs font-bold text-gray-900 dark:text-white truncate max-w-[120px] sm:max-w-[200px] hover:bg-[#b9ff66] hover:text-black hover:border-black transition-colors cursor-pointer">
-                {fullName}
-              </Link>
-            )}
-
-            <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="border-2 border-black dark:border-white rounded-lg p-1.5 bg-transparent hover:bg-[#b9ff66] hover:border-black transition-all duration-150 flex items-center justify-center md:hidden"
-            >
-              {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
-            </motion.button>
-          </div>
+          <Link to="/profile" aria-label={`Profile${fullName ? ` for ${fullName}` : ''}`}
+            className="flex items-center gap-2 rounded-full border-2 border-black bg-white py-0.5 pl-0.5 pr-0.5 text-xs font-bold text-gray-900 transition-colors hover:bg-[#b9ff66] hover:text-black dark:border-white/80 dark:bg-[#111] dark:text-white md:pr-3">
+            <span aria-hidden="true" className="flex h-8 w-8 items-center justify-center rounded-full bg-[#b9ff66] text-[11px] font-extrabold text-black">
+              {initials(fullName)}
+            </span>
+            <span className="hidden max-w-[160px] truncate md:inline">{fullName || 'Profile'}</span>
+          </Link>
         </div>
+      </header>
 
-        <AnimatePresence>
-          {isMobileMenuOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: -8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.2 }}
-              className="absolute top-16 left-0 right-0 mx-4 z-50 md:hidden bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-4 shadow-xl flex flex-col gap-4"
-            >
-              <NavLinks mobile />
-              <div className="border-t border-gray-200 dark:border-gray-700 pt-3 mt-1">
-                <motion.button
-                  whileTap={{ scale: 0.97 }}
-                  onClick={handleSignOut}
-                  className="flex items-center gap-2 text-sm font-bold text-red-500 hover:text-red-600 transition-colors"
-                >
-                  <LogOut size={14} />
-                  Sign Out
-                </motion.button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      <div className="pt-16 min-h-screen bg-[#f7f6f2] dark:bg-[#0a0a0a] w-full">
-        <div className="max-w-5xl mx-auto px-6 py-10 w-full">
+      <div className="app-shell min-h-screen w-full bg-[#f7f6f2] pt-[calc(3.5rem+env(safe-area-inset-top))] dark:bg-[#0a0a0a] md:pt-16">
+        <main className="mx-auto w-full max-w-5xl px-4 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-5 sm:px-6 md:pb-16 md:pt-10">
           {children}
-        </div>
+        </main>
       </div>
+
+      <nav aria-label="Sections"
+        className="fixed inset-x-0 bottom-0 z-50 border-t-2 border-black bg-[#f7f6f2]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md dark:border-white/80 dark:bg-[#0a0a0a]/95 md:hidden">
+        <div className="mx-auto flex max-w-md items-stretch px-2">
+          {tabs.map(tab => <BottomTab key={tab.to} {...tab} end />)}
+        </div>
+      </nav>
     </>
   );
 }
