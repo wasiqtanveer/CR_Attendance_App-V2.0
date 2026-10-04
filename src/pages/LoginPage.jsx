@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, CalendarCheck } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import DoodleBackground from '../components/DoodleBackground';
+import AuthShell from '../components/AuthShell';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -12,6 +12,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
 
   const handleLogin = async (e) => {
@@ -51,13 +52,11 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="relative min-h-screen bg-[#f7f6f2] dark:bg-[#0a0a0a] flex items-center justify-center px-4">
-      <DoodleBackground />
-
+    <AuthShell>
       <motion.div
         layoutId="authCard"
         transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-        className="relative z-10 bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-8 w-full max-w-sm overflow-hidden"
+        className="auth-card relative z-10 bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-8 w-full max-w-sm overflow-hidden"
       >
         <AnimatePresence mode="popLayout" initial={false}>
           {!showForgotPassword ? (
@@ -73,57 +72,64 @@ export default function LoginPage() {
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-                  className="bg-[#b9ff66] border-2 border-black rounded-2xl p-4 flex items-center justify-center mb-6"
+                  className="flex items-center justify-center mb-6"
                 >
-                  <CalendarCheck size={32} className="text-black" />
+                  <img src="/favicon.svg" alt="" className="h-16 w-16" />
                 </motion.div>
-                <div className="bg-[#b9ff66] text-black text-xs font-bold px-3 py-1 rounded-full border border-black inline-block mb-4">
-                  CR Portal
-                </div>
-                <h1 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">
+                <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white">
                   Sign in
                 </h1>
-                <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-1 mb-7 text-center">
+                <p className="text-sm font-medium text-gray-600 dark:text-gray-400 mt-1 mb-7 text-center">
                   Welcome back, take attendance.
                 </p>
               </div>
 
               <form onSubmit={handleLogin}>
                 <div className="mb-4">
-                  <label className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 block uppercase tracking-wide">
+                  <label htmlFor="login-email" className="label">
                     Email
                   </label>
                   <input
+                    id="login-email"
+                    autoComplete="email"
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
-                    className="w-full px-4 py-3 rounded-xl border-2 border-black dark:border-white bg-transparent text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-0 focus:border-[#b9ff66] text-sm font-medium transition-colors duration-150"
+                    className="field"
                     placeholder="you@example.com"
                   />
                 </div>
 
                 <div className="mb-4">
-                    <label className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 block uppercase tracking-wide">
+                    <label htmlFor="login-password" className="label">
                       Password
                     </label>
                     <input
-                      type="password"
+                      id="login-password"
+                      autoComplete="current-password"
+                      type={showPassword ? 'text' : 'password'}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       required
-                      className="w-full px-4 py-3 rounded-xl border-2 border-black dark:border-white bg-transparent text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-0 focus:border-[#b9ff66] text-sm font-medium transition-colors duration-150"
+                      className="field"
                       placeholder="••••••••"
                     />
-                    <span 
+                    <div className="flex items-center justify-between gap-3 mt-2">
+                    <button type="button"
+                      onClick={() => setShowPassword(value => !value)}
+                      className="text-xs font-bold underline underline-offset-2 text-gray-600 dark:text-gray-300"
+                    >{showPassword ? 'Hide password' : 'Show password'}</button>
+                    <button type="button"
                       onClick={() => {
                         setShowForgotPassword(true);
                         setError(null);
                       }}
-                      className="text-xs font-bold text-gray-400 hover:text-black dark:hover:text-white transition-colors cursor-pointer underline underline-offset-2 block text-right mt-1"
+                      className="text-xs font-bold text-gray-600 dark:text-gray-300 hover:text-black dark:hover:text-white transition-colors cursor-pointer underline underline-offset-2 text-right"
                     >
                       Forgot password?
-                    </span>
+                    </button>
+                    </div>
                 </div>
 
                 {error && (
@@ -140,13 +146,13 @@ export default function LoginPage() {
                   whileTap={{ scale: 0.97 }}
                   type="submit"
                   disabled={loading}
-                  className="w-full py-2.5 mt-2 bg-[#b9ff66] text-black font-bold border-2 border-black rounded-xl hover:bg-black hover:text-[#b9ff66] transition-all duration-200 disabled:opacity-70"
+                  className="btn-primary mt-2 w-full min-h-[48px] text-[15px]"
                 >
                   {loading ? 'Signing in...' : 'Sign in →'}
                 </motion.button>
               </form>
 
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400 text-center mt-6">
+              <p className="text-sm font-medium text-gray-600 dark:text-gray-400 text-center mt-6">
                 Don't have an account?{' '}
                 <Link to="/register" className="text-black dark:text-white font-bold underline underline-offset-2 hover:text-[#b9ff66] hover:decoration-[#b9ff66] transition-colors">
                   Register
@@ -162,7 +168,7 @@ export default function LoginPage() {
               exit={{ opacity: 0, x: -16, filter: 'blur(4px)' }}
               transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
             >
-              <div 
+              <button type="button"
                 onClick={() => {
                   setShowForgotPassword(false);
                   setSuccess(false);
@@ -171,7 +177,7 @@ export default function LoginPage() {
                 className="inline-flex text-xs font-bold text-gray-500 hover:text-black dark:text-gray-400 dark:hover:text-white transition-colors cursor-pointer mb-6 items-center gap-1.5 px-3 py-1.5 rounded-full border border-transparent hover:border-gray-200 dark:hover:border-white/10"
               >
                 <ArrowLeft size={14} /> Back to sign in
-              </div>
+              </button>
 
               {success ? (
                 <motion.div
@@ -182,7 +188,7 @@ export default function LoginPage() {
                   <div className="w-12 h-12 bg-black text-[#b9ff66] rounded-full flex items-center justify-center mx-auto mb-3">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
                   </div>
-                  <h3 className="text-black font-black text-lg mb-1">Check your inbox</h3>
+                  <h3 className="text-black font-extrabold text-lg mb-1">Check your inbox</h3>
                   <p className="text-black/80 font-medium text-sm">We've sent a password reset link to your email.</p>
                 </motion.div>
               ) : (
@@ -198,25 +204,27 @@ export default function LoginPage() {
                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
                       </svg>
                     </motion.div>
-                    <h1 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">
+                    <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white">
                       Reset Password
                     </h1>
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-1 mb-7 text-center">
+                    <p className="text-sm font-medium text-gray-600 dark:text-gray-400 mt-1 mb-7 text-center">
                       Enter your email and we'll send you a reset link.
                     </p>
                   </div>
 
                   <form onSubmit={handleResetRequest}>
                     <div className="mb-4">
-                      <label className="text-sm font-bold text-gray-900 dark:text-white mb-1.5 block uppercase tracking-wide">
+                      <label htmlFor="recovery-email" className="label">
                         Email
                       </label>
                       <input
+                        id="recovery-email"
+                        autoComplete="email"
                         type="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         required
-                        className="w-full px-4 py-3 rounded-xl border-2 border-black dark:border-white bg-transparent text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-0 focus:border-[#b9ff66] text-sm font-medium transition-colors duration-150"
+                        className="field"
                         placeholder="you@example.com"
                       />
                     </div>
@@ -231,7 +239,7 @@ export default function LoginPage() {
                       whileTap={{ scale: 0.97 }}
                       type="submit"
                       disabled={loading}
-                      className="w-full py-2.5 mt-2 bg-[#b9ff66] text-black font-bold border-2 border-black rounded-xl hover:bg-black hover:text-[#b9ff66] transition-all duration-200 disabled:opacity-70"
+                      className="btn-primary mt-2 w-full min-h-[48px] text-[15px]"
                     >
                       {loading ? 'Sending...' : 'Send Reset Link →'}
                     </motion.button>
@@ -242,6 +250,6 @@ export default function LoginPage() {
           )}
         </AnimatePresence>
       </motion.div>
-    </div>
+    </AuthShell>
   );
 }
