@@ -270,7 +270,7 @@ export default function AttendancePage() {
           courseName={courseName}
           summary={students.length ? `Roll call · ${students.length} ${students.length === 1 ? 'student' : 'students'}` : 'Roll call'}
           onBack={() => checkUnsavedAndProceed(() => navigate('/dashboard'))}
-          actions={
+          actions={saveLabel !== 'All saved' && (
             <div role="status" aria-live="polite"
               className={`inline-flex items-center gap-2 rounded-full border-2 px-3 py-1.5 text-xs font-bold ${saveState.error
                 ? 'border-amber-500 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200'
@@ -278,7 +278,7 @@ export default function AttendancePage() {
               <span aria-hidden="true" className={`h-2 w-2 rounded-full ${saveState.error ? 'bg-amber-500' : saveState.saving || saveState.pending ? 'animate-pulse bg-yellow-500' : 'bg-green-600'}`} />
               {saveLabel}
             </div>
-          }
+          )}
         />
 
         {error && <div role="alert" className="alert-error mb-4">{error}</div>}

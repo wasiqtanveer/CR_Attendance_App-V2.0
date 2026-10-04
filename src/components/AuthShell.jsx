@@ -9,6 +9,13 @@ const highlights = [
 export default function AuthShell({ children }) {
   return (
     <main className="auth-shell">
+      <div className="auth-mobile-brand">
+        <div className="auth-mobile-brand-row">
+          <img src="/favicon.svg" alt="" />
+          <span>CR Attendance</span>
+        </div>
+        <p>Every class, under control.</p>
+      </div>
       <div className="auth-stage">
         <aside className="auth-story" aria-label="About CR Attendance">
           <div className="auth-story-brand">

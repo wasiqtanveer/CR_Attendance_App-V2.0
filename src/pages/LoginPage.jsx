@@ -72,7 +72,7 @@ export default function LoginPage() {
                   initial={{ scale: 0.8, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
                   transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-                  className="flex items-center justify-center mb-6"
+                  className="auth-logo mb-5 flex items-center justify-center"
                 >
                   <img src="/favicon.svg" alt="" className="h-16 w-16" />
                 </motion.div>
