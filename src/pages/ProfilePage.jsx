@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Pencil, Check, X, Lock, ChevronDown, ChevronUp } from 'lucide-react';
+import { Pencil, Check, X, Lock, ChevronDown, ChevronUp, LogOut } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { playPresent, setSoundsEnabled, soundsEnabled } from '../lib/sounds';
 import useSWR from 'swr';
 import { useTheme } from '../context/ThemeContext';
 import { useLoadingBar } from '../context/LoadingBarContext';
 import Layout from '../components/Layout';
+import { fetchAllRows } from '../lib/fetchAllRows';
+import { useModalFocus } from '../hooks/useModalFocus';
 
 function ProfileSkeleton() {
   return (
@@ -44,58 +46,59 @@ export default function ProfilePage() {
   const [editName, setEditName] = useState('');
   const [saving, setSaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [accountError, setAccountError] = useState(null);
+  const [deletingAccount, setDeletingAccount] = useState(false);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const signOutDialogRef = useModalFocus(showSignOutConfirm, () => setShowSignOutConfirm(false));
+  const deleteDialogRef = useModalFocus(showDeleteConfirm, () => { if (!deletingAccount) setShowDeleteConfirm(false); });
 
-  const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordError, setPasswordError] = useState(null);
+  const [profileError, setProfileError] = useState(null);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
   const [isPasswordAccordionOpen, setIsPasswordAccordionOpen] = useState(false);
+  const [soundsOn, setSoundsOn] = useState(soundsEnabled);
   
-  const { theme, toggleTheme } = useTheme();
-  const isDarkMode = theme === 'dark';
-  const navigate = useNavigate();
+  const { preference, setThemePreference } = useTheme();
   const loadingBar = useLoadingBar();
 
   const fetcher = async () => {
-    try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return null;
 
-      const [profileRes, coursesRes] = await Promise.all([
+      const [profileRes, courses] = await Promise.all([
         supabase.from('profiles').select('*').eq('id', session.user.id).single(),
-        supabase.from('courses').select('id', { count: 'exact' }).eq('cr_id', session.user.id)
+        fetchAllRows(() => supabase.from('courses').select('id').eq('cr_id', session.user.id).order('id')),
       ]);
+      if (profileRes.error) throw profileRes.error;
 
       let studentTotal = 0;
-      if (coursesRes.data && coursesRes.data.length > 0) {
-        const courseIds = coursesRes.data.map(c => c.id);
-        const { count } = await supabase
+      if (courses.length > 0) {
+        const courseIds = courses.map(c => c.id);
+        const { count, error } = await supabase
           .from('students')
           .select('id', { count: 'exact', head: true })
-          .in('course_id', courseIds);
+          .in('course_id', courseIds).is('archived_at', null);
+        if (error) throw error;
         studentTotal = count || 0;
       }
 
       return {
         session,
         profile: profileRes.data || {},
-        stats: { courses: coursesRes.count || 0, students: studentTotal }
+        stats: { courses: courses.length, students: studentTotal }
       };
-    } catch (err) {
-      throw err;
-    }
   };
 
-  const { data, mutate, isLoading: loading, isValidating } = useSWR('profile_data', fetcher);
+  const { data, error: loadError, mutate, isLoading: loading, isValidating } = useSWR('profile_data', fetcher);
 
   const profLoadingBarActive = useRef(false);
   useEffect(() => {
     if (isValidating && !data) { profLoadingBarActive.current = true; loadingBar?.start(); }
     else if (!isValidating && profLoadingBarActive.current) { profLoadingBarActive.current = false; loadingBar?.done(); }
-  }, [isValidating]);
+  }, [isValidating, data, loadingBar]);
   
   const profile = data?.profile || null;
   const stats = data?.stats || { courses: 0, students: 0 };
@@ -110,6 +113,7 @@ export default function ProfilePage() {
   const handleUpdateName = async () => {
     if (!editName.trim()) return;
     setSaving(true);
+    setProfileError(null);
     try {
       const { error } = await supabase
         .from('profiles')
@@ -118,6 +122,7 @@ export default function ProfilePage() {
         })
         .eq('id', session.user.id);
       
+      if (error) throw error;
       if (!error) {
         if (data) mutate({ ...data, profile: { ...data.profile, full_name: editName } }, false);
         setIsEditing(false);
@@ -125,7 +130,7 @@ export default function ProfilePage() {
         window.dispatchEvent(new Event('cr_name_updated'));
       }
     } catch (error) {
-      console.error('Error updating profile:', error);
+      setProfileError(`Could not update name: ${error.message}`);
     } finally {
       setSaving(false);
     }
@@ -158,7 +163,7 @@ export default function ProfilePage() {
         setConfirmPassword('');
         setTimeout(() => setPasswordSuccess(false), 3000);
       }
-    } catch (err) {
+    } catch {
       setPasswordError('An unexpected error occurred.');
     } finally {
       setIsUpdatingPassword(false);
@@ -170,12 +175,23 @@ export default function ProfilePage() {
   };
 
   const handleDeleteAccount = async () => {
+    setDeletingAccount(true);
+    setAccountError(null);
     try {
-      await supabase.from('profiles').delete().eq('id', session?.user?.id);
-      await supabase.auth.signOut();
-      navigate('/login');
+      const { data, error } = await supabase.functions.invoke('delete-account', { method: 'POST' });
+      if (error || !data?.deleted) throw error || new Error('Account deletion could not be verified.');
+      await supabase.auth.signOut({ scope: 'local' });
+      for (let index = localStorage.length - 1; index >= 0; index--) {
+        const key = localStorage.key(index);
+        if (key?.startsWith(`attendance_queue_v2_${session.user.id}_`) ||
+            key?.startsWith(`attendance_roster_${session.user.id}_`) ||
+            key?.startsWith(`attendance_day_${session.user.id}_`)) localStorage.removeItem(key);
+      }
+      localStorage.removeItem('cr_name');
+      window.location.assign('/login');
     } catch (err) {
-      console.error(err);
+      setAccountError(err.message || 'Could not delete account. Please try again.');
+      setDeletingAccount(false);
     }
   };
 
@@ -206,40 +222,34 @@ export default function ProfilePage() {
             exit={{ opacity: 0, y: -12 }}
             transition={{ duration: 0.4, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
           >
-        <motion.div
-          initial={{ opacity: 0, scale: 0.8 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.25 }}
-          className="bg-[#b9ff66] border border-black text-black text-xs font-bold px-3 py-1 rounded-full inline-block mb-3"
-        >
-          Account
-        </motion.div>
-        <motion.h1
-          initial={{ opacity: 0, x: -16 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-          className="text-4xl font-black text-gray-900 dark:text-white tracking-tight"
-        >
+        {(loadError || profileError) && (
+          <div role="alert" className="mb-4 rounded-xl border-2 border-red-500 bg-red-100 px-4 py-3 text-sm font-bold text-red-800">
+            {loadError ? `Could not load profile: ${loadError.message}` : profileError}
+            {loadError && <button className="ml-3 underline" onClick={() => mutate()}>Retry</button>}
+          </div>
+        )}
+        <h1 className="text-[2rem] font-extrabold leading-[1.05] text-gray-900 dark:text-white sm:text-5xl">
           Profile
-        </motion.h1>
-        <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-2">
-          Manage your account
+        </h1>
+        <p className="mt-2 text-sm font-medium text-gray-600 dark:text-gray-400">
+          Your account, preferences and sign-out.
         </p>
 
-        <div className="w-full mt-10 flex flex-col gap-6">
+        <div className="mt-6 grid w-full grid-cols-1 items-start gap-4 md:mt-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] lg:gap-6">
+          <div className="flex min-w-0 flex-col gap-4 lg:gap-6">
           {/* Section 1 - Account Info */}
           <motion.div 
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
-            className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 shadow-sm"
+            className="panel p-5 sm:p-6"
           >
-            <h2 className="text-xs font-black uppercase tracking-wide text-gray-400 mb-5">
+            <h2 className="mb-4 text-lg font-extrabold text-gray-900 dark:text-white">
               Account Info
             </h2>
             
             <div className="mb-4">
-              <label className="block text-xs font-black uppercase tracking-wide text-gray-400 mb-1.5">
+              <label className="label">
                 Full Name
               </label>
               
@@ -247,13 +257,15 @@ export default function ProfilePage() {
                 {isEditing ? (
                   <div className="flex items-center gap-2 w-full">
                     <input
+                      aria-label="Full name"
                       type="text"
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
-                      className="flex-1 bg-transparent border-2 border-black dark:border-white rounded-xl px-3 py-1.5 text-sm font-bold text-gray-900 dark:text-white focus:outline-none focus:border-[#b9ff66]"
+                      className="field flex-1 py-2"
                       autoFocus
                     />
                     <motion.button
+                      aria-label="Save name"
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                       onClick={handleUpdateName}
@@ -263,6 +275,7 @@ export default function ProfilePage() {
                       <Check size={16} />
                     </motion.button>
                     <motion.button
+                      aria-label="Cancel name edit"
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                       onClick={() => setIsEditing(false)}
@@ -277,6 +290,7 @@ export default function ProfilePage() {
                       {profile?.full_name || session?.user?.user_metadata?.full_name || 'CR User'}
                     </span>
                     <motion.button
+                      aria-label="Edit name"
                       whileHover={{ scale: 1.1 }}
                       whileTap={{ scale: 0.9 }}
                       onClick={() => setIsEditing(true)}
@@ -290,7 +304,7 @@ export default function ProfilePage() {
             </div>
 
             <div className="mb-4">
-              <label className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-gray-400 mb-1.5">
+              <label className="label flex items-center gap-1.5">
                 Email
                 <Lock size={12} className="text-gray-400" />
               </label>
@@ -300,7 +314,7 @@ export default function ProfilePage() {
             </div>
 
             <div>
-              <label className="block text-xs font-black uppercase tracking-wide text-gray-400 mb-1.5">
+              <label className="label">
                 Member Since
               </label>
               <div className="font-bold text-gray-900 dark:text-white text-sm">
@@ -308,7 +322,7 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            <div className="border-t-2 border-dashed border-gray-100 dark:border-gray-800 my-5" />
+            <div className="my-4 border-t border-black/10 dark:border-white/10" />
 
             <div className="flex gap-3">
               <div className="bg-[#f7f6f2] dark:bg-[#1a1a1a] border-2 border-black dark:border-white rounded-xl px-4 py-2 flex flex-col justify-center w-full">
@@ -321,14 +335,14 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            <div className="border-t-2 border-dashed border-gray-100 dark:border-gray-800 my-5" />
+            <div className="my-4 border-t border-black/10 dark:border-white/10" />
 
             <div>
               <button 
                 onClick={() => setIsPasswordAccordionOpen(!isPasswordAccordionOpen)}
-                className="flex items-center justify-between w-full text-left focus:outline-none mb-4 group"
+                className="group -mx-1 flex min-h-[44px] w-[calc(100%+0.5rem)] items-center justify-between rounded-lg px-1 text-left" aria-expanded={isPasswordAccordionOpen}
               >
-                <span className="block text-xs font-black uppercase tracking-wide text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition-colors">
+                <span className="block text-sm font-bold text-gray-900 dark:text-white">
                   Change Password
                 </span>
                 {isPasswordAccordionOpen ? (
@@ -346,7 +360,7 @@ export default function ProfilePage() {
                     exit={{ height: 0, opacity: 0 }}
                     className="overflow-hidden"
                   >
-              <div className="pt-1 pb-2">
+              <div className="pb-1 pt-3">
                       {passwordSuccess && (
                 <div className="border-2 border-green-400 bg-green-50 dark:bg-green-950 text-green-600 rounded-xl px-4 py-2 text-xs font-bold mb-4">
                   Password updated successfully!
@@ -360,25 +374,29 @@ export default function ProfilePage() {
               )}
 
               <input
+                aria-label="New password"
+                autoComplete="new-password"
                 type="password"
                 placeholder="New Password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                className="w-full bg-transparent border-2 border-black dark:border-white rounded-xl px-4 py-2.5 text-sm font-bold text-gray-900 dark:text-white focus:outline-none focus:border-[#b9ff66] mb-3"
+                className="field mb-3"
               />
               <input
+                aria-label="Confirm new password"
+                autoComplete="new-password"
                 type="password"
                 placeholder="Confirm New Password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full bg-transparent border-2 border-black dark:border-white rounded-xl px-4 py-2.5 text-sm font-bold text-gray-900 dark:text-white focus:outline-none focus:border-[#b9ff66] mb-3"
+                className="field mb-3"
               />
               
               <motion.button
                 whileTap={{ scale: 0.97 }}
                 onClick={handleUpdatePassword}
                 disabled={isUpdatingPassword}
-                className="bg-[#b9ff66] border-2 border-black text-black font-bold py-2.5 rounded-xl hover:bg-black hover:text-[#b9ff66] transition-all duration-150 text-sm w-full mb-2"
+                className="btn-primary mb-2 w-full"
               >
                 {isUpdatingPassword ? 'Updating...' : 'Update Password →'}
               </motion.button>
@@ -394,91 +412,75 @@ export default function ProfilePage() {
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
-            className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 shadow-sm"
+            className="panel p-5 sm:p-6"
           >
-            <h2 className="text-xs font-black uppercase tracking-wide text-gray-400 mb-5">
+            <h2 className="mb-4 text-lg font-extrabold text-gray-900 dark:text-white">
               Preferences
             </h2>
-            
-            <div className="flex items-center justify-between">
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <span id="theme-label" className="text-sm font-bold text-gray-900 dark:text-white">Appearance</span>
+              <div role="radiogroup" aria-labelledby="theme-label" className="grid grid-cols-3 gap-1 rounded-xl border-2 border-black bg-[#f7f6f2] p-1 dark:border-white/80 dark:bg-[#0a0a0a]">
+                {[['system', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([value, label]) => (
+                  <button key={value} type="button" role="radio" aria-checked={preference === value}
+                    onClick={() => setThemePreference(value)}
+                    className={`min-h-[40px] rounded-lg px-4 text-sm font-bold transition-colors ${preference === value
+                      ? 'bg-[#b9ff66] text-black'
+                      : 'text-gray-600 hover:text-black dark:text-gray-300 dark:hover:text-white'}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="my-4 border-t border-black/10 dark:border-white/10" />
+
+            <div className="flex items-center justify-between gap-4">
               <div>
-                <div className="font-bold text-sm text-gray-900 dark:text-white truncate">Dark Mode</div>
-                <div className="text-xs font-medium text-gray-400 mt-0.5 truncate">Switch between light and dark theme</div>
+                <span id="sound-label" className="block text-sm font-bold text-gray-900 dark:text-white">Sounds &amp; vibration</span>
+                <span className="mt-0.5 block text-xs text-gray-600 dark:text-gray-400">Plays a tick when you mark a student. On iPhone, the silent switch mutes it.</span>
               </div>
-              
-              <div className="ml-4">
-                <motion.div
-                  onClick={toggleTheme}
-                  className={`w-12 h-6 rounded-full border-2 cursor-pointer flex items-center px-0.5 relative ${
-                    isDarkMode 
-                      ? 'bg-[#b9ff66] border-black' 
-                      : 'bg-gray-200 border-black dark:border-white'
-                  }`}
-                >
-                  <motion.div 
-                    className={`w-4 h-4 rounded-full absolute ${isDarkMode ? 'bg-black' : 'bg-white border border-gray-300'}`}
-                    animate={{ x: isDarkMode ? 20 : 0 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                  />
-                </motion.div>
-              </div>
+              <button type="button" role="switch" aria-checked={soundsOn} aria-labelledby="sound-label"
+                onClick={() => {
+                  const next = !soundsOn;
+                  setSoundsEnabled(next);
+                  setSoundsOn(next);
+                  if (next) playPresent();
+                }}
+                className={`relative h-8 w-14 flex-none rounded-full border-2 border-black transition-colors dark:border-white/80 ${soundsOn ? 'bg-[#b9ff66]' : 'bg-black/10 dark:bg-white/15'}`}>
+                <span aria-hidden="true" className={`absolute top-1/2 h-6 w-6 -translate-y-1/2 rounded-full border-2 border-black bg-white transition-[left] duration-200 ${soundsOn ? 'left-[26px]' : 'left-0.5'}`} />
+              </button>
             </div>
           </motion.div>
 
-          {/* Section 3 - Danger Zone */}
-          <motion.div 
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            className="bg-white dark:bg-[#111111] border-2 border-red-400 dark:border-red-600 rounded-2xl p-6 shadow-sm"
-          >
-            <h2 className="text-xs font-black uppercase tracking-wide text-red-400 mb-5">
-              Danger Zone
-            </h2>
-
-            <div className="flex flex-row items-center justify-between gap-4">
-              <div>
-                <div className="font-bold text-sm text-gray-900 dark:text-white">Sign Out</div>
-                <div className="text-xs font-medium text-gray-400 mt-0.5 hidden sm:block">You will be redirected to the login page</div>
-              </div>
-              <motion.button
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                onClick={() => setShowSignOutConfirm(true)}
-                className="border-2 border-black dark:border-white rounded-xl px-5 py-2 text-sm font-bold text-gray-900 dark:text-white hover:bg-black hover:text-[#b9ff66] dark:hover:bg-white dark:hover:text-black transition-all bg-transparent whitespace-nowrap"
-              >
-                Sign Out →
-              </motion.button>
+          </div>
+          <div className="flex min-w-0 flex-col gap-4 lg:gap-6">
+          <div className="panel flex items-center justify-between gap-4 p-5 sm:p-6">
+            <div>
+              <h2 className="text-lg font-extrabold text-gray-900 dark:text-white">Sign out</h2>
+              <p className="mt-0.5 text-xs text-gray-600 dark:text-gray-400">Sign out of this device.</p>
             </div>
+            <button onClick={() => setShowSignOutConfirm(true)} className="btn-secondary">
+              <LogOut size={16} /> Sign out
+            </button>
+          </div>
 
-            <div className="border-t-2 border-dashed border-red-100 dark:border-red-900/40 my-5" />
-
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <div className="font-bold text-sm text-red-500">Delete Account</div>
-                <div className="text-xs font-medium text-gray-400 mt-0.5 hidden sm:block">Permanently delete all your data. This cannot be undone.</div>
-              </div>
-
-              <div className="flex-shrink-0">
-                <motion.button
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={() => setShowDeleteConfirm(true)}
-                  className="bg-red-50 dark:bg-red-950/30 border-2 border-red-500 rounded-xl px-5 py-2 text-sm font-bold text-red-600 hover:bg-red-500 hover:text-white transition-all whitespace-nowrap"
-                >
-                  Delete Account
-                </motion.button>
-              </div>
-            </div>
-          </motion.div>
+          <div className="rounded-2xl border-2 border-red-400 bg-white p-5 dark:border-red-500/70 dark:bg-[#111] sm:p-6">
+            <h2 className="text-lg font-extrabold text-red-600 dark:text-red-400">Delete account</h2>
+            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">Permanently deletes every course, student and attendance record. This can’t be undone.</p>
+            <button onClick={() => setShowDeleteConfirm(true)}
+              className="btn mt-4 border-red-500 bg-red-50 text-red-700 hover:bg-red-500 hover:text-white dark:bg-red-950/40 dark:text-red-300 dark:hover:text-white">
+              Delete account…
+            </button>
+          </div>
 
           <motion.div
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3, delay: 0.15 }}
-            className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6"
+            className="panel p-5 sm:p-6"
           >
-            <h2 className="text-xs font-black uppercase tracking-wide text-gray-400 mb-5">
+            <h2 className="mb-4 text-lg font-extrabold text-gray-900 dark:text-white">
               About This App
             </h2>
             <div className="flex items-center gap-3">
@@ -487,13 +489,13 @@ export default function ProfilePage() {
               </div>
               <div className="flex flex-col">
                 <span className="font-black text-gray-900 dark:text-white text-sm">Muhammad Wasiq Tanveer</span>
-                <span className="text-xs text-gray-400 font-medium">Developer</span>
+                <span className="text-xs font-medium text-gray-600 dark:text-gray-400">Developer</span>
               </div>
             </div>
             
-            <div className="border-t-2 border-dashed border-gray-100 dark:border-gray-800 my-4" />
+            <div className="my-4 border-t border-black/10 dark:border-white/10" />
             
-            <p className="text-sm font-medium text-gray-500 dark:text-gray-400 leading-relaxed">
+            <p className="text-sm leading-relaxed text-gray-600 dark:text-gray-400">
               CR Attendance App was built around my personal need, but as fellow class reps found it useful, I thought why not make it practical. Built with React, Tailwind CSS, Framer Motion and Supabase.
             </p>
             
@@ -523,10 +525,11 @@ export default function ProfilePage() {
               </a>
             </div>
 
-            <div className="mt-5 text-xs text-gray-400 font-medium">
+            <div className="mt-5 text-xs font-medium text-gray-600 dark:text-gray-400">
               Built by Muhammad Wasiq Tanveer · {new Date().getFullYear()}
             </div>
           </motion.div>
+          </div>
         </div>
           </motion.div>
         )}
@@ -535,86 +538,72 @@ export default function ProfilePage() {
       {/* ── Modals ──────────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {showSignOutConfirm && (
-          <>
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 pointer-events-none rounded-xl"
-            />
+          <motion.div key="signout" className="sheet-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setShowSignOutConfirm(false)}>
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: '-40%', x: '-50%' }}
-              animate={{ opacity: 1, scale: 1, y: '-50%', x: '-50%' }}
-              exit={{ opacity: 0, scale: 0.95, y: '-40%', x: '-50%' }}
-              className="fixed top-1/2 left-1/2 w-[90%] max-w-sm bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 z-[60] shadow-2xl pointer-events-auto"
+              ref={signOutDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="signout-dialog-title"
+              tabIndex={-1}
+              initial={{ y: 40, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 40, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              onClick={event => event.stopPropagation()}
+              className="sheet"
             >
-              <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">Sign Out?</h3>
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-6">
-                Are you sure you want to sign out of your account?
+              <div className="sheet-handle" />
+              <h3 id="signout-dialog-title" className="text-xl font-extrabold text-gray-900 dark:text-white">Sign out?</h3>
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                Marks waiting to sync stay on this phone and upload when you sign back in.
               </p>
-              <div className="flex gap-3 mt-4">
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => setShowSignOutConfirm(false)}
-                  className="flex-1 border-2 border-gray-300 dark:border-gray-600 rounded-xl py-2.5 font-bold text-gray-600 dark:text-gray-300 hover:border-black dark:hover:border-white hover:text-black dark:hover:text-white transition-colors"
-                >
-                  Cancel
-                </motion.button>
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
+              <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row">
+                <button onClick={() => setShowSignOutConfirm(false)} className="btn-secondary flex-1">Stay signed in</button>
+                <button
                   onClick={() => {
                     setShowSignOutConfirm(false);
                     handleSignOut();
                   }}
-                  className="flex-1 bg-black dark:bg-white border-2 border-black dark:border-white rounded-xl py-2.5 font-bold text-[#b9ff66] dark:text-black hover:bg-[#b9ff66] hover:text-black transition-colors"
+                  className="btn flex-1 border-black bg-black text-[#b9ff66] hover:bg-[#b9ff66] hover:text-black dark:border-white dark:bg-white dark:text-black"
                 >
-                  Yes, Sign Out
-                </motion.button>
+                  <LogOut size={16} /> Sign out
+                </button>
               </div>
             </motion.div>
-          </>
+          </motion.div>
         )}
 
         {showDeleteConfirm && (
-          <>
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 pointer-events-none rounded-xl"
-            />
+          <motion.div key="delete" className="sheet-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => { if (!deletingAccount) setShowDeleteConfirm(false); }}>
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: '-40%', x: '-50%' }}
-              animate={{ opacity: 1, scale: 1, y: '-50%', x: '-50%' }}
-              exit={{ opacity: 0, scale: 0.95, y: '-40%', x: '-50%' }}
-              className="fixed top-1/2 left-1/2 w-[90%] max-w-sm bg-white dark:bg-[#111111] border-2 border-red-500 dark:border-red-600 rounded-2xl p-6 z-[60] shadow-2xl pointer-events-auto"
+              ref={deleteDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-account-dialog-title"
+              tabIndex={-1}
+              initial={{ y: 40, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 40, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              onClick={event => event.stopPropagation()}
+              className="sheet border-red-500 dark:border-red-500"
             >
-              <h3 className="text-xl font-bold text-red-500 dark:text-red-600 mb-2">Delete Everything?</h3>
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-6">
-                This will permanently delete all your courses, students, and attendance data. This action cannot be undone.
+              <div className="sheet-handle" />
+              <h3 id="delete-account-dialog-title" className="text-xl font-extrabold text-red-600 dark:text-red-400">Delete your account?</h3>
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                This permanently deletes your login and every course, student and attendance record. It can’t be undone.
               </p>
-              <div className="flex gap-3 mt-4">
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="flex-1 border-2 border-gray-300 dark:border-gray-600 rounded-xl py-2.5 font-bold text-gray-600 dark:text-gray-300 hover:border-black dark:hover:border-white hover:text-black dark:hover:text-white transition-colors"
-                >
-                  Cancel
-                </motion.button>
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={handleDeleteAccount}
-                  className="flex-1 bg-red-50 dark:bg-red-950/30 border-2 border-red-500 rounded-xl py-2.5 font-bold text-red-600 hover:bg-red-500 hover:text-white transition-colors"
-                >
-                  Yes, Delete
-                </motion.button>
+              {accountError && <p role="alert" className="alert-error mt-4">{accountError}</p>}
+              <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row">
+                <button onClick={() => setShowDeleteConfirm(false)} disabled={deletingAccount} className="btn-secondary flex-1">Keep my account</button>
+                <button onClick={handleDeleteAccount} disabled={deletingAccount} className="btn-danger flex-1">
+                  {deletingAccount ? 'Deleting…' : 'Delete everything'}
+                </button>
               </div>
             </motion.div>
-          </>
+          </motion.div>
         )}
       </AnimatePresence>
     </Layout>

@@ -1,30 +1,41 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, Download, FileSpreadsheet, BarChart2, Trash2 } from 'lucide-react';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { BarChart2, Check, ChevronDown, Download, Search, Trash2 } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell } from 'recharts';
-import * as XLSX from 'xlsx-js-style';
 import useSWR from 'swr';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../context/ThemeContext';
 import { useLoadingBar } from '../context/LoadingBarContext';
 import Layout from '../components/Layout';
+import { CourseHeader } from '../components/CourseNav';
 import AnimatedNumber from '../components/AnimatedNumber';
 import { playDelete } from '../lib/sounds';
+import { fetchAllRows } from '../lib/fetchAllRows';
+import { useModalFocus } from '../hooks/useModalFocus';
 
 export default function HistoryPage() {
   const { id: courseId } = useParams();
+  const prefersReducedMotion = useReducedMotion();
   const navigate = useNavigate();
   const { theme } = useTheme();
   const isDarkMode = theme === 'dark';
   const loadingBar = useLoadingBar();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [expandedStudentId, setExpandedStudentId] = useState(null);
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [thresholdInput, setThresholdInput] = useState('75');
+  const [savingThreshold, setSavingThreshold] = useState(false);
   const [expandedDates, setExpandedDates] = useState(new Set());
   const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
   const [confirmDeleteDate, setConfirmDeleteDate] = useState(null);
   const [mobileDeleteDate, setMobileDeleteDate] = useState(null);
+  const deleteDateDialogRef = useModalFocus(Boolean(mobileDeleteDate), () => setMobileDeleteDate(null));
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [actionError, setActionError] = useState(null);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -35,34 +46,49 @@ export default function HistoryPage() {
   }, []);
 
   const fetcher = async () => {
-    try {
-      const [courseData, studentsData, attendanceData] = await Promise.all([
-        supabase.from('courses').select('name').eq('id', courseId).single(),
-        supabase.from('students').select('*').eq('course_id', courseId).order('name', { ascending: true }),
-        supabase.from('attendance').select('*').eq('course_id', courseId)
+      const [courseData, studentsData, attendanceRecords] = await Promise.all([
+        supabase.from('courses').select('name, risk_threshold').eq('id', courseId).single(),
+        fetchAllRows(() => supabase.from('students').select('*').eq('course_id', courseId).order('id')),
+        fetchAllRows(() => supabase.from('attendance').select('*').eq('course_id', courseId).order('id')),
       ]);
+      if (courseData.error) throw courseData.error;
       return {
         courseName: courseData.data?.name || '',
-        students: studentsData.data || [],
-        attendanceRecords: attendanceData.data || []
+        riskThreshold: courseData.data?.risk_threshold ?? 75,
+        students: studentsData,
+        attendanceRecords,
       };
-    } catch (err) {
-      throw err;
-    }
   };
 
-  const { data, mutate, isLoading: loading, isValidating } = useSWR(`history_${courseId}`, fetcher);
+  const { data, error: loadError, mutate, isLoading: loading, isValidating } = useSWR(`history_${courseId}`, fetcher);
 
   // Only show loading bar on true first fetch — ref gate prevents ghost flash on cached revalidations
   const histLoadingBarActive = useRef(false);
   useEffect(() => {
     if (isValidating && !data) { histLoadingBarActive.current = true; loadingBar?.start(); }
     else if (!isValidating && histLoadingBarActive.current) { histLoadingBarActive.current = false; loadingBar?.done(); }
-  }, [isValidating]);
+  }, [isValidating, data, loadingBar]);
 
   const courseName = data?.courseName || '';
+  const riskThreshold = data?.riskThreshold ?? 75;
+  useEffect(() => { setThresholdInput(String(riskThreshold)); }, [riskThreshold]);
+  const handleSaveThreshold = async (event) => {
+    event.preventDefault();
+    const value = Number(thresholdInput);
+    if (!Number.isInteger(value) || value < 1 || value > 100) {
+      setActionError('Choose a threshold from 1 to 100 percent.');
+      return;
+    }
+    setSavingThreshold(true);
+    setActionError(null);
+    const { error } = await supabase.from('courses').update({ risk_threshold: value }).eq('id', courseId);
+    if (error) setActionError(`Could not save threshold: ${error.message}`);
+    else mutate(current => ({ ...current, riskThreshold: value }), false);
+    setSavingThreshold(false);
+  };
   const students = data?.students || [];
-  const attendanceRecords = data?.attendanceRecords || [];
+  const attendanceRecords = (data?.attendanceRecords || []).filter(record =>
+    (!fromDate || record.date >= fromDate) && (!toDate || record.date <= toDate));
 
   // Compute stats
   const normalizeStatus = (status) => status?.toLowerCase() === 'absent' ? 'absent' : 'present';
@@ -79,7 +105,8 @@ export default function HistoryPage() {
 
   const datesList = Object.keys(dateRecordsMap).sort((a, b) => new Date(b) - new Date(a));
   const totalClasses = datesList.length;
-  const totalStudents = students.length;
+  const rosterSizeOn = date => students.filter(student => !student.archived_at || student.archived_at.slice(0, 10) > date).length;
+  const incompleteCount = datesList.filter(date => dateRecordsMap[date].total < rosterSizeOn(date)).length;
 
   // Student stats
   const studentStatsMap = {};
@@ -106,13 +133,16 @@ export default function HistoryPage() {
     const totalRecords = stats.total;
     const percentage = totalRecords > 0 ? Math.round((stats.present / totalRecords) * 100) : 0;
     
-    if (totalRecords > 0 && percentage < 75) {
+    const atRisk = totalRecords > 0 && stats.present / totalRecords < riskThreshold / 100;
+    if (atRisk) {
       atRiskCount++;
     }
 
     return {
       ...student,
       percentage,
+      atRisk,
+      totalRecords,
       present: stats.present,
       absent: stats.absent
     };
@@ -120,19 +150,6 @@ export default function HistoryPage() {
 
   const totalPossible = totalPresentsAll + totalAbsentsAll;
   const avgAttendance = totalPossible > 0 ? Math.round((totalPresentsAll / totalPossible) * 100) : 0;
-
-  let bestDay = "—";
-  let bestPct = -1;
-  datesList.forEach(date => {
-    const stats = dateRecordsMap[date];
-    const total = stats.present + stats.absent;
-    const pct = total > 0 ? Math.round((stats.present / total) * 100) : -1;
-    if (pct > bestPct && total > 0) {
-      bestPct = pct;
-      const d = new Date(date + 'T00:00:00');
-      bestDay = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    }
-  });
 
   const trendData = [...datesList].reverse().map(date => {
     const stats = dateRecordsMap[date];
@@ -145,12 +162,14 @@ export default function HistoryPage() {
     };
   });
 
-  const studentChartData = studentsWithStats.map(s => {
+  const studentChartData = [...studentsWithStats].filter(s => s.totalRecords > 0)
+    .sort((a, b) => a.percentage - b.percentage).slice(0, 8).map(s => {
     const parts = s.name.split(' ');
     const shortName = parts.length > 1 ? `${parts[0]} ${parts[1][0]}.` : s.name;
     return {
       name: shortName,
-      percentage: s.percentage
+      percentage: s.percentage,
+      atRisk: s.atRisk,
     };
   });
 
@@ -159,7 +178,8 @@ export default function HistoryPage() {
     s.reg_number.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleExport = () => {
+  const handleExport = async () => {
+    const XLSX = await import('xlsx-js-style');
     const today = new Date();
     // format like Apr-18-2025
     const opts = { month: 'short', day: 'numeric', year: 'numeric' };
@@ -277,8 +297,8 @@ export default function HistoryPage() {
       
       const studentStats = studentsWithStats.find(s => s.id === student.id) || { percentage: 0 };
       const pct = studentStats.percentage;
-      let pctStyle = cellStyleAbsent;
-      if (pct >= 75) {
+      let pctStyle = student.totalRecords > 0 ? cellStyleAbsent : cellStyleDash(rowIndex);
+      if (!student.atRisk && student.totalRecords > 0) {
         pctStyle = cellStylePresent;
       } else if (pct >= 50) {
         pctStyle = {
@@ -323,7 +343,7 @@ export default function HistoryPage() {
       
       const pct = student.percentage;
       let pctStyle = cellStyleAbsent;
-      if (pct >= 75) {
+      if (!student.atRisk && student.totalRecords > 0) {
         pctStyle = cellStylePresent;
       } else if (pct >= 50) {
         pctStyle = {
@@ -389,7 +409,7 @@ export default function HistoryPage() {
       s: (i === 0 || i === 1) ? atRiskStudentHeaderStyle : atRiskHeaderStyle
     })));
 
-    const atRiskStudents = studentsWithStats.filter(s => s.percentage < 75);
+    const atRiskStudents = studentsWithStats.filter(s => s.atRisk);
     const atRiskRowStyle = {
       fill: { fgColor: { rgb: "FEF2F2" } },
       font: { name: "Arial", color: { rgb: "111111" } },
@@ -445,6 +465,7 @@ export default function HistoryPage() {
     // Explicitly set cellStyles to true so xlsx-js-style applies our objects
     XLSX.writeFile(wb, fileName, { cellStyles: true });
     
+    setToastMessage('Report downloaded. Check your Downloads folder.');
     setShowToast(true);
     setTimeout(() => setShowToast(false), 3500);
   };
@@ -488,10 +509,11 @@ export default function HistoryPage() {
       mutate({ ...data, attendanceRecords: data.attendanceRecords.filter(req => req.date !== date) }, false);
       setConfirmDeleteDate(null);
       
+      setToastMessage('Day cleared.');
       setShowToast(true);
       setTimeout(() => setShowToast(false), 3000);
     } catch (err) {
-      console.error("Error deleting date:", err);
+      setActionError(`Could not delete that session: ${err.message}`);
     } finally {
       setDeleteLoading(false);
     }
@@ -553,68 +575,81 @@ export default function HistoryPage() {
             transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
             className="pb-24"
           >
-            <div className="flex items-center justify-between mb-6">
-          <motion.button
-            onClick={() => navigate('/dashboard')}
-            whileHover={{ x: -2 }}
-            whileTap={{ scale: 0.97 }}
-            className="flex items-center gap-1.5 text-sm font-bold text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white transition-colors"
-          >
-            <ArrowLeft size={16} />
-            Back to Courses
-          </motion.button>
-        </div>
-
-        <div>
-          {courseName && (
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.8 }} 
-              animate={{ opacity: 1, scale: 1 }} 
-              transition={{ duration: 0.25 }}
-              className="bg-[#b9ff66] border border-black text-black text-xs font-bold px-3 py-1 rounded-full inline-block mb-3"
-            >
-              {courseName}
-            </motion.div>
-          )}
-          <h1 className="text-4xl font-black text-gray-900 dark:text-white tracking-tight">
-            History
-          </h1>
-          <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mt-2">
-            {totalClasses} classes recorded
-          </p>
-        </div>
+            {(loadError || actionError) && (
+              <div role="alert" className="mb-5 rounded-xl border-2 border-red-500 bg-red-100 px-4 py-3 text-sm font-bold text-red-800">
+                {loadError ? `Could not load complete history: ${loadError.message}` : actionError}
+                {loadError && <button className="ml-3 underline" onClick={() => mutate()}>Retry</button>}
+              </div>
+            )}
+        <CourseHeader
+          courseId={courseId}
+          courseName={courseName}
+          summary={`History · ${totalClasses} ${totalClasses === 1 ? 'class' : 'classes'} recorded`}
+          actions={
+            <button onClick={handleExport} disabled={!students.length} className="btn-secondary px-3 sm:px-4">
+              <Download size={17} /> Export
+            </button>
+          }
+        />
 
         {/* Stats Row */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-8">
-          <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-5">
-            <div className="text-xs font-black uppercase tracking-wide text-gray-400 mb-2">Total Classes</div>
-            <div className="text-3xl font-black text-gray-900 dark:text-white"><AnimatedNumber value={totalClasses} /></div>
+        <div className="grid grid-cols-3 gap-2 sm:gap-4">
+          <div className="panel p-3 sm:p-5">
+            <div className="text-[11px] font-bold text-gray-600 dark:text-gray-400 sm:text-xs">Average</div>
+            <div className="mt-1 font-display text-2xl font-extrabold tabular-nums text-gray-900 dark:text-white sm:text-3xl"><AnimatedNumber value={avgAttendance} />%</div>
           </div>
-          <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-5">
-            <div className="text-xs font-black uppercase tracking-wide text-gray-400 mb-2">Total Students</div>
-            <div className="text-3xl font-black text-gray-900 dark:text-white"><AnimatedNumber value={totalStudents} /></div>
+          <div className="panel p-3 sm:p-5">
+            <div className="text-[11px] font-bold text-gray-600 dark:text-gray-400 sm:text-xs">Below {riskThreshold}%</div>
+            <div className={`mt-1 font-display text-2xl font-extrabold tabular-nums sm:text-3xl ${atRiskCount > 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-white'}`}><AnimatedNumber value={atRiskCount} /></div>
           </div>
-          <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-5">
-            <div className="text-xs font-black uppercase tracking-wide text-gray-400 mb-2">Avg Attendance</div>
-            <div className="text-3xl font-black text-gray-900 dark:text-white"><AnimatedNumber value={avgAttendance} />%</div>
-          </div>
-          <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-5">
-            <div className="text-xs font-black uppercase tracking-wide text-gray-400 mb-2">Best Day</div>
-            <div className="text-3xl font-black text-gray-900 dark:text-white">{bestDay}</div>
-          </div>
-          <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-5">
-            <div className="text-xs font-black uppercase tracking-wide text-gray-400 mb-2">At Risk</div>
-            <div className={`text-3xl font-black ${atRiskCount > 0 ? 'text-red-500' : 'text-gray-900 dark:text-white'}`}><AnimatedNumber value={atRiskCount} /></div>
+          <div className="panel p-3 sm:p-5">
+            <div className="text-[11px] font-bold text-gray-600 dark:text-gray-400 sm:text-xs">Incomplete</div>
+            <div className="mt-1 font-display text-2xl font-extrabold tabular-nums text-gray-900 dark:text-white sm:text-3xl"><AnimatedNumber value={incompleteCount} /></div>
           </div>
         </div>
 
+        <details className="group panel-soft mt-3 [&_summary::-webkit-details-marker]:hidden">
+          <summary className="flex min-h-[48px] items-center justify-between gap-3 px-4 text-sm font-bold text-gray-900 dark:text-white">
+            <span>Date range &amp; at-risk threshold{(fromDate || toDate) && <span className="ml-2 rounded-full bg-[#b9ff66] px-2 py-0.5 text-[11px] text-black">Filtered</span>}</span>
+            <ChevronDown size={18} className="flex-none transition-transform group-open:rotate-180" />
+          </summary>
+          <div className="grid gap-4 border-t border-black/10 px-4 pb-4 pt-4 dark:border-white/10 lg:grid-cols-[minmax(0,1fr)_minmax(250px,0.5fr)]">
+            <section aria-labelledby="history-date-range" className="min-w-0">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <h2 id="history-date-range" className="text-sm font-extrabold text-gray-900 dark:text-white">Date range</h2>
+                {(fromDate || toDate) && <button type="button" className="text-xs font-bold text-gray-700 underline underline-offset-4 hover:text-black dark:text-gray-300 dark:hover:text-white" onClick={() => { setFromDate(''); setToDate(''); }}>Show all dates</button>}
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="min-w-0"><span className="label">From</span>
+                  <input type="date" max={toDate || undefined} value={fromDate} onChange={event => setFromDate(event.target.value)} className="field date-input px-3" />
+                </label>
+                <label className="min-w-0"><span className="label">To</span>
+                  <input type="date" min={fromDate || undefined} value={toDate} onChange={event => setToDate(event.target.value)} className="field date-input px-3" />
+                </label>
+              </div>
+            </section>
+            <section aria-labelledby="history-risk-setting" className="min-w-0">
+              <h2 id="history-risk-setting" className="mb-2 text-sm font-extrabold text-gray-900 dark:text-white">Flag students below</h2>
+              <form onSubmit={handleSaveThreshold} className="flex items-end gap-2">
+                <label className="relative min-w-0 flex-1">
+                  <span className="sr-only">At-risk threshold percent</span>
+                  <input type="number" inputMode="numeric" min="1" max="100" required value={thresholdInput} onChange={event => setThresholdInput(event.target.value)} className="field pr-9" />
+                  <span aria-hidden="true" className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-sm font-bold text-gray-500">%</span>
+                </label>
+                <button type="submit" disabled={savingThreshold || Number(thresholdInput) === riskThreshold} className="btn-primary">Save</button>
+              </form>
+            </section>
+            <p className="text-xs text-gray-600 dark:text-gray-400 lg:col-span-2">Percentages count recorded marks only. “Incomplete” means some students on the roster weren’t marked that day.</p>
+          </div>
+        </details>
+
         {/* Analytics Section */}
-        <div className="mt-10 mb-6">
-          <h2 className="text-xs font-black uppercase tracking-wide text-gray-400 mb-6">Analytics</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="mt-8 mb-6">
+          <h2 className="mb-3 text-lg font-extrabold text-gray-900 dark:text-white">Trends</h2>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
             {/* Chart 1: Trend */}
-            <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6">
-              <h3 className="text-sm font-black uppercase tracking-wide text-gray-900 dark:text-white mb-4">Attendance Trend</h3>
+            <div className="panel p-4 sm:p-6">
+              <h3 className="mb-4 text-sm font-extrabold text-gray-900 dark:text-white">Attendance by class</h3>
               <div className="h-[220px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={trendData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
@@ -641,7 +676,7 @@ export default function HistoryPage() {
                       dataKey="percentage" 
                       stroke="#b9ff66" 
                       strokeWidth={3} 
-                      isAnimationActive={true}
+                      isAnimationActive={!prefersReducedMotion}
                       dot={{ fill: '#b9ff66', stroke: '#000', strokeWidth: 2, r: 4 }} 
                       activeDot={{ r: 6, fill: '#b9ff66', stroke: '#000', strokeWidth: 2 }}
                     />
@@ -651,8 +686,8 @@ export default function HistoryPage() {
             </div>
 
             {/* Chart 2: Distribution */}
-            <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6">
-              <h3 className="text-sm font-black uppercase tracking-wide text-gray-900 dark:text-white mb-4">Student Overview</h3>
+            <div className="panel p-4 sm:p-6">
+              <h3 className="mb-4 text-sm font-extrabold text-gray-900 dark:text-white">Lowest attendance</h3>
               <div className="h-[220px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart layout="vertical" data={studentChartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
@@ -678,10 +713,10 @@ export default function HistoryPage() {
                       itemStyle={tooltipItemStyle}
                       cursor={{fill: 'rgba(156, 163, 175, 0.1)'}}
                     />
-                    <Bar dataKey="percentage" radius={[0, 6, 6, 0]} isAnimationActive={true}>
+                    <Bar dataKey="percentage" radius={[0, 6, 6, 0]} isAnimationActive={!prefersReducedMotion}>
                       {
                         studentChartData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.percentage >= 75 ? '#b9ff66' : '#f87171'} />
+                          <Cell key={`cell-${index}`} fill={entry.atRisk ? '#f87171' : '#b9ff66'} />
                         ))
                       }
                     </Bar>
@@ -693,18 +728,21 @@ export default function HistoryPage() {
         </div>
 
         {/* Per-date history list */}
-        <h2 className="text-xs font-black uppercase tracking-wide text-gray-400 mt-10 mb-4">
-          Class Records
+        <h2 className="mb-3 mt-8 text-lg font-extrabold text-gray-900 dark:text-white">
+          Classes
         </h2>
         {datesList.length === 0 ? (
-          <div className="text-sm text-gray-500">No classes recorded yet.</div>
+          <div className="panel-soft px-4 py-8 text-center text-sm font-semibold text-gray-600 dark:text-gray-400">
+            {fromDate || toDate ? 'No classes in this date range.' : 'No classes recorded yet. Take a roll call and it will show up here.'}
+          </div>
         ) : (
-          <div className="flex flex-col">
+          <div className="flex flex-col gap-2">
             {datesList.map((date, index) => {
               const stats = dateRecordsMap[date];
               const total = stats.present + stats.absent;
               const pct = total > 0 ? Math.round((stats.present / total) * 100) : 0;
-              const good = pct >= 75;
+              const good = total > 0 && stats.present / total >= riskThreshold / 100;
+              const unmarked = Math.max(0, rosterSizeOn(date) - total);
 
               return (
                 <motion.div
@@ -713,20 +751,21 @@ export default function HistoryPage() {
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, x: -16, scale: 0.98 }}
-                  transition={{ delay: index * 0.04, duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-                  onClick={() => navigate(`/courses/${courseId}/attendance?date=${date}`)}
-                  className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl px-5 py-4 cursor-pointer hover:border-[#b9ff66] transition-all duration-150 relative mb-3"
+                  transition={{ delay: Math.min(index * 0.015, 0.18), duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                  className="relative rounded-2xl border-2 border-black/80 bg-white py-3 pl-4 pr-3 dark:border-white/60 dark:bg-[#111]"
                 >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="font-black text-gray-900 dark:text-white flex items-center gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <button onClick={() => navigate(`/courses/${courseId}/attendance?date=${date}`)}
+                      aria-label={`Open roll call for ${formatDate(date)}`}
+                      className="min-w-0 flex-1 text-left">
+                      <span className="block truncate text-[15px] font-bold text-gray-900 underline-offset-4 hover:underline dark:text-white">
                         {formatDate(date)}
-                      </div>
-                      <div className="text-xs text-gray-400 font-medium mt-1">
-                        {stats.present} present · {stats.absent} absent
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
+                      </span>
+                      <span className="mt-0.5 block text-xs font-medium text-gray-600 dark:text-gray-400">
+                        {stats.present} present · {stats.absent} absent{unmarked > 0 && <span className="text-amber-700 dark:text-amber-400"> · {unmarked} unmarked</span>}
+                      </span>
+                    </button>
+                    <div className="flex shrink-0 items-center gap-1">
                       <AnimatePresence mode="popLayout">
                         {confirmDeleteDate === date && !isMobile ? (
                           <motion.div 
@@ -735,25 +774,24 @@ export default function HistoryPage() {
                             animate={{ opacity: 1, scale: 1, x: 0 }}
                             exit={{ opacity: 0, scale: 0.8, x: 20 }}
                             transition={{ duration: 0.2 }}
-                            className="flex items-center gap-1 border-2 border-red-500 rounded-xl p-1 bg-red-50 dark:bg-red-950 h-[32px]"
+                            className="flex items-center gap-1"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <motion.button
-                              whileTap={{ scale: 0.9 }}
-                              onClick={(e) => handleDeleteDate(e, date)}
-                              disabled={deleteLoading}
-                              className="px-2 py-0 text-xs font-bold text-white bg-red-500 rounded-lg hover:bg-red-600 transition-colors h-full flex items-center justify-center"
-                            >
-                              {deleteLoading ? '...' : 'Clear?'}
-                            </motion.button>
-                            <motion.button
-                              whileTap={{ scale: 0.9 }}
+                            <button
                               onClick={(e) => { e.stopPropagation(); setConfirmDeleteDate(null); }}
                               disabled={deleteLoading}
-                              className="px-2 py-0 text-xs font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800 rounded-lg transition-colors h-full flex items-center justify-center"
+                              className="btn-quiet min-h-[36px] px-2.5 text-xs"
                             >
-                              ✕
-                            </motion.button>
+                              Cancel
+                            </button>
+                            <button
+                              onClick={(e) => handleDeleteDate(e, date)}
+                              disabled={deleteLoading}
+                              aria-label={`Clear attendance for ${formatDate(date)}`}
+                              className="btn-danger min-h-[36px] px-2.5 text-xs"
+                            >
+                              {deleteLoading ? 'Clearing…' : 'Clear day'}
+                            </button>
                           </motion.div>
                         ) : (
                           <motion.button 
@@ -772,25 +810,26 @@ export default function HistoryPage() {
                                 setConfirmDeleteDate(date);
                               }
                             }}
-                            className="rounded-xl flex-shrink-0 bg-red-50 dark:bg-red-950/30 border-2 border-red-200 dark:border-red-900/50 text-red-500 hover:border-red-500 transition-all flex items-center justify-center h-[32px] w-[44px]"
-                            title="Delete Day"
+                            aria-label={`Clear attendance for ${formatDate(date)}`}
+                            className="flex h-10 w-10 flex-none items-center justify-center rounded-xl text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:text-gray-400 dark:hover:bg-red-950/50 dark:hover:text-red-400"
+                            title="Clear this day"
                           >
-                            <Trash2 size={16} />
+                            <Trash2 size={17} />
                           </motion.button>
                         )}
                       </AnimatePresence>
 
-                      <motion.button 
-                        whileHover={{ scale: 1.05 }}
-                        whileTap={{ scale: 0.95 }}
+                      <button
                         onClick={(e) => toggleDateRow(e, date)}
-                        className="rounded-xl flex-shrink-0 bg-gray-100 dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-black dark:hover:border-white hover:text-black dark:hover:text-white transition-all flex items-center justify-center h-[32px] w-[44px]"
-                        title="Show Attendance Chart"
+                        aria-label={`${expandedDates.has(date) ? 'Hide' : 'Show'} attendance bar for ${formatDate(date)}`}
+                        aria-expanded={expandedDates.has(date)}
+                        className="hidden h-10 w-10 flex-none items-center justify-center rounded-xl text-gray-500 transition-colors hover:bg-black/5 hover:text-black dark:text-gray-400 dark:hover:bg-white/10 dark:hover:text-white sm:flex"
+                        title="Show attendance bar"
                       >
-                        <BarChart2 size={16} />
-                      </motion.button>
+                        <BarChart2 size={17} />
+                      </button>
 
-                      <div className={`rounded-xl flex-shrink-0 text-sm font-black flex items-center justify-center h-[32px] w-[64px] ${good ? 'bg-[#b9ff66] border-2 border-black text-black' : 'bg-red-100 border-2 border-red-400 text-red-700'}`}>
+                      <div className={`flex h-9 w-[58px] flex-none items-center justify-center rounded-xl border-2 text-sm font-extrabold tabular-nums ${good ? 'border-black bg-[#b9ff66] text-black' : 'border-red-400 bg-red-50 text-red-700 dark:border-red-500/60 dark:bg-red-950/40 dark:text-red-300'}`}>
                         {pct}%
                       </div>
                     </div>
@@ -823,51 +862,77 @@ export default function HistoryPage() {
         )}
 
         {/* Per-student breakdown */}
-        <h2 className="text-xs font-black uppercase tracking-wide text-gray-400 mt-10 mb-4">
-          Student Attendance
+        <h2 className="mb-3 mt-8 text-lg font-extrabold text-gray-900 dark:text-white">
+          Students
         </h2>
-        <input
-          type="text"
-          placeholder="Search students..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full px-4 py-3 rounded-xl border-2 border-black dark:border-white bg-white dark:bg-[#111111] text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-[#b9ff66] font-medium text-sm transition-colors mb-4"
-        />
-        
+        <label className="relative mb-3 block">
+          <Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
+          <input
+            type="search"
+            aria-label="Search students in history"
+            placeholder="Search name or reg no."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="field pl-10"
+          />
+        </label>
+
         {filteredStudents.length === 0 ? (
-          <div className="text-sm text-gray-500">No students match your search.</div>
+          <div className="panel-soft px-4 py-8 text-center text-sm font-semibold text-gray-600 dark:text-gray-400">No students match your search.</div>
         ) : (
-          <div className="grid gap-3">
+          <div className="grid gap-2">
             {filteredStudents.map((student, index) => {
-              const good = student.percentage >= 75;
+              const good = !student.atRisk && student.totalRecords > 0;
 
               return (
                 <motion.div
                   key={student.id}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.04 }}
-                  className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl px-5 py-4 flex items-center justify-between"
+                  transition={{ delay: Math.min(index * 0.015, 0.18) }}
+                  className="panel-soft flex min-w-0 flex-wrap items-center justify-between gap-3 py-3 pl-4 pr-3"
                 >
-                  <div className="w-1/3 min-w-[120px]">
-                    <div className="font-bold text-gray-900 dark:text-white truncate">{student.name}</div>
-                    <div className="text-xs text-gray-400">{student.reg_number}</div>
-                  </div>
+                  <button type="button" onClick={() => setExpandedStudentId(current => current === student.id ? null : student.id)}
+                    aria-expanded={expandedStudentId === student.id} aria-controls={`student-history-${student.id}`}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                    <ChevronDown size={16} aria-hidden="true" className={`flex-none text-gray-500 transition-transform ${expandedStudentId === student.id ? 'rotate-180' : ''}`} />
+                    <span className="min-w-0">
+                      <span className="block truncate text-[15px] font-bold text-gray-900 dark:text-white">
+                        {student.name}
+                        {student.archived_at && <span className="ml-2 rounded-full bg-black/5 px-2 py-0.5 text-[10px] font-bold text-gray-600 dark:bg-white/10 dark:text-gray-300">Archived</span>}
+                      </span>
+                      <span className="block truncate text-xs tabular-nums text-gray-600 dark:text-gray-400">{student.reg_number} · {student.present}/{student.totalRecords} present</span>
+                    </span>
+                  </button>
                   
                   <div className="hidden sm:block">
                     <div className="w-32 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                       <motion.div
                         initial={{ width: 0 }}
                         animate={{ width: `${student.percentage}%` }}
-                        transition={{ duration: 0.6, delay: index * 0.04, ease: [0.22, 1, 0.36, 1] }}
+                        transition={{ duration: 0.6, delay: Math.min(index * 0.04, 0.2), ease: [0.22, 1, 0.36, 1] }}
                         className={`h-full ${good ? 'bg-[#b9ff66]' : 'bg-red-400'}`}
                       />
                     </div>
                   </div>
 
-                  <div className={`rounded-xl px-3 py-1 text-sm font-black ${good ? 'bg-[#b9ff66] border-2 border-black text-black' : 'bg-red-100 border-2 border-red-400 text-red-700'}`}>
-                    {student.percentage}%
+                  <div className={`flex h-9 min-w-[58px] shrink-0 items-center justify-center rounded-xl border-2 px-2 text-sm font-extrabold tabular-nums ${student.totalRecords === 0 ? 'border-transparent bg-black/5 text-xs text-gray-600 dark:bg-white/10 dark:text-gray-300' : good ? 'border-black bg-[#b9ff66] text-black' : 'border-red-400 bg-red-50 text-red-700 dark:border-red-500/60 dark:bg-red-950/40 dark:text-red-300'}`}>
+                    {student.totalRecords ? `${student.percentage}%` : 'No marks'}
                   </div>
+                  {expandedStudentId === student.id && (
+                    <div id={`student-history-${student.id}`} className="w-full max-h-64 overflow-y-auto border-t border-black/10 pt-2 dark:border-white/10">
+                      {datesList.length === 0 ? <p className="text-sm text-gray-600 dark:text-gray-300">No sessions in this range.</p> :
+                        datesList.map(date => {
+                          const mark = attendanceRecords.find(record => record.student_id === student.id && record.date === date);
+                          return <div key={date} className="flex justify-between gap-3 py-1 text-sm">
+                            <span className="text-gray-600 dark:text-gray-300">{formatDate(date)}</span>
+                            <span className={`font-bold ${mark?.status === 'present' ? 'text-green-700 dark:text-[#b9ff66]' : mark?.status === 'absent' ? 'text-red-600' : 'text-gray-500'}`}>
+                              {mark?.status === 'present' ? 'Present' : mark?.status === 'absent' ? 'Absent' : 'Unmarked'}
+                            </span>
+                          </div>;
+                        })}
+                    </div>
+                  )}
                 </motion.div>
               );
             })}
@@ -878,19 +943,6 @@ export default function HistoryPage() {
         )}
       </AnimatePresence>
 
-      {/* Export buttons */}
-      <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3">
-        <motion.button
-          whileHover={!isMobile ? { scale: 1.04 } : {}}
-          whileTap={{ scale: 0.97 }}
-          onClick={handleExport}
-          className="bg-[#b9ff66] border-2 border-black rounded-2xl px-6 py-3 font-black text-black text-sm flex items-center gap-2 shadow-md hover:bg-black hover:text-[#b9ff66] transition-all"
-        >
-          <Download size={18} />
-          Export to Excel
-        </motion.button>
-      </div>
-
       {/* ── Mobile Modals & Toasts ─────────────────────────────────── */}
       <AnimatePresence>
         {mobileDeleteDate && (
@@ -899,39 +951,40 @@ export default function HistoryPage() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setMobileDeleteDate(null)}
-            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+            className="sheet-backdrop"
           >
             <motion.div
-              initial={{ scale: 0.95, opacity: 0, y: 10 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              ref={deleteDateDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-date-dialog-title"
+              tabIndex={-1}
+              initial={{ y: 40, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 40, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 shadow-2xl flex flex-col items-center text-center"
+              className="sheet"
             >
-              <div className="flex items-center justify-center w-14 h-14 rounded-full bg-red-100 dark:bg-red-900/30 text-red-500 mb-4 border-2 border-red-500">
-                <Trash2 size={24} strokeWidth={2.5} />
-              </div>
-              <h3 className="text-2xl font-black text-gray-900 dark:text-white mb-2">Delete Record?</h3>
-              <p className="text-gray-600 dark:text-gray-400 mb-8 font-medium">
-                Are you sure you want to clear attendance for<br/>
-                <span className="text-gray-900 dark:text-gray-200 font-bold">{new Date(mobileDeleteDate).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</span>?
+              <div className="sheet-handle" />
+              <h3 id="delete-date-dialog-title" className="text-xl font-extrabold text-gray-900 dark:text-white">
+                Clear {formatDate(mobileDeleteDate)}?
+              </h3>
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                Every present and absent mark for this day will be deleted. This can’t be undone.
               </p>
-              <div className="flex gap-3 w-full">
-                <button
-                  onClick={() => setMobileDeleteDate(null)}
-                  disabled={deleteLoading}
-                  className="flex-1 py-3.5 px-4 bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white font-black rounded-xl border-2 border-transparent hover:border-gray-300 dark:hover:border-gray-700 transition-colors disabled:opacity-50"
-                >
-                  Cancel
+              <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row">
+                <button onClick={() => setMobileDeleteDate(null)} disabled={deleteLoading} className="btn-secondary flex-1">
+                  Keep it
                 </button>
                 <button
                   onClick={(e) => {
                     handleDeleteDate(e, mobileDeleteDate).then(() => setMobileDeleteDate(null));
                   }}
                   disabled={deleteLoading}
-                  className="flex-1 py-3.5 px-4 bg-red-500 text-white font-black rounded-xl border-2 border-black hover:bg-red-600 transition-colors flex items-center justify-center disabled:opacity-80"
+                  className="btn-danger flex-1"
                 >
-                  {deleteLoading ? <span className="animate-pulse">...</span> : 'Delete'}
+                  <Trash2 size={16} /> {deleteLoading ? 'Clearing…' : 'Clear day'}
                 </button>
               </div>
             </motion.div>
@@ -940,12 +993,13 @@ export default function HistoryPage() {
 
         {showToast && (
           <motion.div
+            role="status"
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 16 }}
-            className="fixed bottom-24 right-6 z-50 bg-[#b9ff66] border-2 border-black rounded-2xl px-5 py-3 font-bold text-black text-sm shadow-xl"
+            className="fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom))] left-4 right-4 z-50 flex items-center gap-2 rounded-xl border-2 border-black bg-[#b9ff66] px-4 py-3 text-sm font-bold text-black md:bottom-6 md:left-auto md:right-6"
           >
-            Export ready! Check your downloads.
+            <Check size={16} strokeWidth={3} /> {toastMessage}
           </motion.div>
         )}
       </AnimatePresence>

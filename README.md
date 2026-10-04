@@ -53,15 +53,16 @@ Mark a class in thirty seconds. Import the roster from Excel. Export a report yo
 <td width="50%" valign="top">
 
 ### ⚡ Marking
-A full-screen tap list — one tap per student, present or absent. Nothing else on the screen.
+A compact tap list with progress, an unmarked filter, one present or absent choice per student, and Undo for bulk marking.
 
-**Drafts save as you tap.** Close the tab, lose signal, drop the phone — reopen and the half-marked class is still there, keyed to that exact course and date.
+**Marks save as you tap.** A local queue keyed by account, course and date keeps pending changes across refreshes and retries them on reconnect. The screen shows when marks are saving or unsynced.
 
 </td>
 <td width="50%" valign="top">
 
 ### 📊 History
 Every past session, with **Recharts** visuals: attendance trend over time and a per-student ranking so you can see who is actually at risk.
+Set the at-risk threshold per course, filter reports by date, and expand a student to see each recorded session.
 
 Delete a session and every chart recomputes on the spot.
 
@@ -71,7 +72,7 @@ Delete a session and every chart recomputes on the spot.
 <td width="50%" valign="top">
 
 ### 📥 Roster import
-Drop an `.xlsx` or `.csv` — **Name** in column A, **Reg Number** in column B. A pre-formatted template is one click away.
+Drop an `.xlsx` or `.csv` — **Name** in column A, **Reg Number** in column B. Review duplicate and invalid rows before import. A pre-formatted template is one click away.
 
 Thirty students in, zero typing.
 
@@ -95,7 +96,7 @@ Web manifest plus a service worker. Add to home screen and it opens fullscreen w
 <td width="50%" valign="top">
 
 ### 🎨 Built to feel good
-Framer Motion route transitions, a custom cursor, doodle background, count-up numbers, and quiet click sounds. Dark and light, remembered.
+Framer Motion route transitions, doodle background, count-up numbers, and optional sounds. Motion respects the device preference; System, Dark and Light themes are available.
 
 </td>
 </tr>
@@ -107,7 +108,7 @@ Framer Motion route transitions, a custom cursor, doodle background, count-up nu
 
 ## Architecture
 
-There is no backend to run. The browser talks to Postgres directly, and **Row Level Security is the authorization layer** — a CR cannot read another CR's data because the database refuses to return the rows.
+The browser talks to Postgres through Supabase, and **Row Level Security is the authorization layer**. An authenticated Edge Function handles account deletion without exposing the service key to the browser.
 
 ```mermaid
 flowchart TB
@@ -149,7 +150,7 @@ flowchart TB
 
 ## The data model
 
-Four tables. The entire app is these four tables and one constraint.
+Four tables hold the core data. Archived students remain in historical reports. A composite foreign key ensures each attendance row belongs to a student in the same course.
 
 ```mermaid
 erDiagram
@@ -169,6 +170,7 @@ erDiagram
         uuid id PK
         uuid cr_id FK "profiles.id"
         text name
+        int risk_threshold "default 75"
         timestamptz created_at
     }
     STUDENTS {
@@ -176,6 +178,7 @@ erDiagram
         uuid course_id FK "courses.id"
         text name
         text reg_number
+        timestamptz archived_at
         timestamptz created_at
     }
     ATTENDANCE {
@@ -188,7 +191,7 @@ erDiagram
     }
 ```
 
-**The constraint that carries the app** — `unique(course_id, student_id, date)`. One student, one course, one day, one row. Mark the same class twice and the second write lands on the same row instead of duplicating it. Every percentage downstream is therefore correct *by construction*, not by careful application code.
+**The main constraint** — `unique(course_id, student_id, date)`. One student, one course, one day, one row. A partial roll call still needs review: unmarked students are displayed separately and are not treated as absent. The current model supports one attendance status per student per day.
 
 <details>
 <summary><b>How Row Level Security is written</b></summary>
@@ -199,10 +202,10 @@ Every policy resolves back to `auth.uid()`. Owning a `course` transitively grant
 
 | Table | Policy | Rule |
 |---|---|---|
-| `profiles` | `profiles_self` | `auth.uid() = id` |
-| `courses` | `courses_owner` | `auth.uid() = cr_id` |
-| `students` | `students_by_course` | a course exists where `courses.id = students.course_id` **and** `courses.cr_id = auth.uid()` |
-| `attendance` | `attendance_by_course` | a course exists where `courses.id = attendance.course_id` **and** `courses.cr_id = auth.uid()` |
+| `profiles` | CR owns their profile | `auth.uid() = id` |
+| `courses` | CR owns their courses | `auth.uid() = cr_id` |
+| `students` | CR owns their students | a course exists where `courses.id = students.course_id` **and** `courses.cr_id = auth.uid()` |
+| `attendance` | CR owns their attendance | a course exists where `courses.id = attendance.course_id` **and** `courses.cr_id = auth.uid()` |
 
 `profiles` has **no role column**, so there is no self-promotion path — nothing a user can write to their own row raises their access. Policies are scoped `to authenticated` with a matching `with check` on writes, so a forged insert can't be parked inside someone else's course either.
 
@@ -227,19 +230,17 @@ sequenceDiagram
     CR->>App: open /courses/:id/attendance
     App->>DB: fetch roster + today's marks
     DB-->>App: only rows this CR owns
-    App->>LS: restore draft — att_draft, keyed by course + date
+    App->>LS: restore queued marks, keyed by user + course + date
     Note over App,LS: a half-marked class survives<br/>refresh, crash, dead battery
 
     loop per student
         CR->>App: tap present / absent
-        App->>LS: persist draft immediately
+        App->>LS: queue mark immediately
     end
 
-    CR->>App: Save
-    App->>DB: write on (course, student, date)
-    DB-->>App: ✓ stored
-    App->>LS: clear draft
-    App->>App: revalidate history + charts
+    App->>DB: background upsert on (course, student, date)
+    DB-->>App: stored
+    App->>LS: clear acknowledged revision
 ```
 
 <br/>
@@ -249,7 +250,7 @@ sequenceDiagram
 ## What comes out the other end
 
 This is the part that actually ends the argument. One click in History and your teacher gets
-a real `.xlsx` — headers frozen, cells filled by status, percentage computed per student:
+a real `.xlsx` — cells filled by status, percentage computed per student:
 
 <table>
 <tr><th align="left">Reg No.</th><th align="left">Name</th><th align="center">03/02</th><th align="center">05/02</th><th align="center">07/02</th><th align="center">10/02</th><th align="right">%</th></tr>
@@ -272,7 +273,7 @@ Nobody has to compute anything. Nobody has to trust anybody's notebook.
 | `/login` · `/register` · `/reset-password` | **Auth** | Supabase email + password, full reset flow |
 | `/dashboard` | **Dashboard** | Every course, live stats, animated counters, create & delete |
 | `/courses/:id/students` | **Roster** | Add students, Excel/CSV bulk import, template download |
-| `/courses/:id/attendance` | **Mark** | The tap list. Draft-persisted. The thirty-second screen. |
+| `/courses/:id/attendance` | **Mark** | The tap list with durable local queue and sync status. |
 | `/courses/:id/history` | **History** | Session log, trend + ranking charts, styled Excel export |
 | `/profile` | **Profile** | Name, email, account actions |
 
@@ -317,7 +318,7 @@ VITE_SUPABASE_URL=https://xxxxxxxx.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJhbGciOi...
 ```
 
-**3 · Create the database** — in your Supabase project open **SQL Editor** and run [`supabase/schema.sql`](supabase/schema.sql). It creates all four tables, enables RLS, writes the policies and installs the signup trigger in one pass.
+**3 · Create the database** — in your Supabase project open **SQL Editor** and run [`supabase/schema.sql`](supabase/schema.sql). It creates all four tables, enables RLS, writes the policies and installs the signup trigger in one pass. For an existing project, run [`supabase/migrations/20261004_student_integrity.sql`](supabase/migrations/20261004_student_integrity.sql) before deploying the updated app. The migration checks for duplicate active registration numbers and attendance linked to a student in another course; resolve any reported rows before rerunning it. Keep a database backup before migrations.
 
 **4 · Go**
 
@@ -326,6 +327,7 @@ npm run dev       # http://localhost:5173
 npm run build     # production bundle → dist/
 npm run preview   # serve the built bundle
 npm run lint      # eslint
+npm test          # focused data-integrity regressions
 ```
 
 <br/>
@@ -333,6 +335,8 @@ npm run lint      # eslint
 ### Deploying
 
 Import the repo on [Vercel](https://vercel.com) — it auto-detects Vite. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as environment variables, then deploy.
+
+Deploy the `delete-account` Supabase Edge Function from [`supabase/functions/delete-account/index.ts`](supabase/functions/delete-account/index.ts) with JWT verification enabled. Set its `APP_ORIGIN` secret to the exact production origin, such as `https://crattendanceapp.vercel.app`. Supabase provides the project URL and service-role key as function environment variables. Account deletion will show an error until this function is deployed.
 
 > **Don't skip this:** in Supabase → **Auth → URL Configuration**, add your production URL to **Site URL** and **Redirect URLs**. Without it, confirmation and password-reset emails keep pointing at `localhost`.
 
@@ -349,13 +353,12 @@ Import the repo on [Vercel](https://vercel.com) — it auto-detects Vite. Add `V
 src/
 ├── components/
 │   ├── AnimatedNumber.jsx     — count-up stat numbers
-│   ├── CustomCursor.jsx       — cursor follower + click sound
 │   ├── DoodleBackground.jsx   — hand-drawn backdrop layer
 │   ├── Layout.jsx             — app shell, nav, theme toggle
 │   └── ProtectedRoute.jsx     — session guard, redirects to /login
 ├── context/
 │   ├── LoadingBarContext.jsx  — app-wide top progress bar
-│   └── ThemeContext.jsx       — dark / light, persisted
+│   └── ThemeContext.jsx       — system / dark / light, persisted
 ├── hooks/
 │   └── useCountUp.js          — number animation primitive
 ├── lib/
@@ -376,7 +379,9 @@ public/
 └── sw.js                      — service worker
 
 supabase/
-└── schema.sql                 — tables, RLS, signup trigger
+├── schema.sql                 — tables, RLS, signup trigger
+├── migrations/              — upgrade for existing projects
+└── functions/delete-account/ — authenticated account deletion
 ```
 
 </details>

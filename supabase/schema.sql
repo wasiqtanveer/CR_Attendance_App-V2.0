@@ -10,6 +10,7 @@ create table courses (
   id uuid default gen_random_uuid() primary key,
   cr_id uuid references profiles(id) on delete cascade not null,
   name text not null,
+  risk_threshold integer not null default 75 check (risk_threshold between 1 and 100),
   created_at timestamptz default now()
 );
 
@@ -18,16 +19,22 @@ create table students (
   course_id uuid references courses(id) on delete cascade not null,
   name text not null,
   reg_number text not null,
+  archived_at timestamptz,
   created_at timestamptz default now()
 );
+
+create unique index students_course_reg_active_uq
+  on students (course_id, lower(btrim(reg_number))) where archived_at is null;
+alter table students add constraint students_course_id_id_uq unique (course_id, id);
 
 create table attendance (
   id uuid default gen_random_uuid() primary key,
   course_id uuid references courses(id) on delete cascade not null,
-  student_id uuid references students(id) on delete cascade not null,
+  student_id uuid not null,
   date date not null,
   status text check (status in ('present', 'absent')) not null,
   created_at timestamptz default now(),
+  foreign key (course_id, student_id) references students(course_id, id) on delete cascade,
   unique(course_id, student_id, date)
 );
 

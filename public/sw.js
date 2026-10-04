@@ -1,9 +1,14 @@
-const CACHE_NAME = 'cr-attendance-v1';
-const SHELL_ASSETS = ['/', '/index.html'];
+const CACHE_NAME = 'cr-attendance-__BUILD_HASH__';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS))
+    caches.open(CACHE_NAME).then(async (cache) => {
+      const html = await fetch('/index.html');
+      await cache.put('/index.html', html);
+      const manifest = await fetch('/precache.json');
+      if (!manifest.ok) throw new Error('Offline asset manifest unavailable.');
+      await cache.addAll(await manifest.json());
+    })
   );
   self.skipWaiting();
 });
@@ -29,8 +34,20 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // For static assets: cache-first
+  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== self.location.origin) return;
+  const path = new URL(e.request.url).pathname;
+  if (!path.startsWith('/assets/') && !['/icon-192.png', '/icon-512.png', '/manifest.json', '/favicon.svg'].includes(path)) return;
+
+  // Cache every same-origin static asset after its first successful response.
   e.respondWith(
-    caches.match(e.request).then((cached) => cached || fetch(e.request))
+    caches.match(e.request, { ignoreVary: true }).then(async (cached) => {
+      if (cached) return cached;
+      const response = await fetch(e.request);
+      if (response.ok) {
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put(e.request, response.clone());
+      }
+      return response;
+    })
   );
 });

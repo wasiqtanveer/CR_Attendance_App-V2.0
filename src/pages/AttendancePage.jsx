@@ -1,74 +1,95 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, ChevronLeft, ChevronRight, Users } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Search, Undo2, Users, X } from 'lucide-react';
 import useSWR from 'swr';
 import { supabase } from '../lib/supabase';
 import { useLoadingBar } from '../context/LoadingBarContext';
 import Layout from '../components/Layout';
+import { CourseHeader } from '../components/CourseNav';
+import { playAbsent, playPresent, playSuccess } from '../lib/sounds';
+import { flushMarks, pendingMarks, queueMarks, queueState, resumeQueuedMarks } from '../lib/attendanceQueue';
+import { useModalFocus } from '../hooks/useModalFocus';
 
 export default function AttendancePage() {
   const { id: courseId } = useParams();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const loadingBar = useLoadingBar();
 
   const [currentDate, setCurrentDate] = useState(() => {
     const queryDate = searchParams.get('date');
-    if (queryDate) return queryDate;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(queryDate || '')) return queryDate;
     const today = new Date();
     return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   });
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
+  const [unmarkedOnly, setUnmarkedOnly] = useState(false);
+  const [lastBulkSnapshot, setLastBulkSnapshot] = useState(null);
+  const [saveState, setSaveState] = useState({ pending: 0, saving: false, error: null });
   const [localError, setLocalError] = useState(null);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [pendingAction, setPendingAction] = useState(null);
+  const leaveDialogRef = useModalFocus(showLeaveConfirm, () => setShowLeaveConfirm(false));
 
   // ── Fetcher ──────────────────────────────────────────────────────────────
   const fetcher = async () => {
-    try {
-      const [courseRes, studentsRes, attendanceRes] = await Promise.all([
+      const [courseRes, studentsRes, attendanceRes, sessionRes] = await Promise.all([
         supabase.from('courses').select('name').eq('id', courseId).single(),
-        supabase.from('students').select('*').eq('course_id', courseId).order('name', { ascending: true }),
-        supabase.from('attendance').select('*').eq('course_id', courseId).eq('date', currentDate)
+        supabase.from('students').select('*').eq('course_id', courseId).is('archived_at', null).order('name', { ascending: true }),
+        supabase.from('attendance').select('*').eq('course_id', courseId).eq('date', currentDate),
+        supabase.auth.getSession(),
       ]);
 
-      if (courseRes.error) throw courseRes.error;
-      if (studentsRes.error) throw studentsRes.error;
-      if (attendanceRes.error) throw attendanceRes.error;
+      const userId = sessionRes.data.session?.user.id;
+      if (!userId) throw new Error('Sign in before marking attendance.');
+      const rosterKey = `attendance_roster_${userId}_${courseId}`;
+      const dayKey = `attendance_day_${userId}_${courseId}_${currentDate}`;
+      const cachedRoster = JSON.parse(localStorage.getItem(rosterKey) || 'null');
+      const fetchError = courseRes.error || studentsRes.error || attendanceRes.error;
+      const networkFailure = !navigator.onLine || /network|fetch|offline|timeout/i.test(fetchError?.message || '');
+      if (fetchError && (!networkFailure || !cachedRoster)) throw fetchError;
+      const students = studentsRes.data || cachedRoster?.students;
+      if (!students) throw new Error('Open this course while online once before marking offline.');
+      const courseName = courseRes.data?.name || cachedRoster?.courseName || '';
+      if (!courseRes.error && !studentsRes.error) {
+        localStorage.setItem(rosterKey, JSON.stringify({ courseName, students }));
+      }
+      const records = attendanceRes.data || JSON.parse(localStorage.getItem(dayKey) || '[]');
+      if (!attendanceRes.error) localStorage.setItem(dayKey, JSON.stringify(records));
 
       const existingRecords = {};
-      attendanceRes.data?.forEach(record => {
+      records.forEach(record => {
         existingRecords[record.student_id] = record.status;
       });
 
       const attendanceMap = {};
-      studentsRes.data.forEach(student => {
+      students.forEach(student => {
         attendanceMap[student.id] = existingRecords[student.id] || null;
       });
 
-      // Restore draft if any
+      // Migrate drafts from the previous autosave implementation once.
       const draftKey = `att_draft_${courseId}_${currentDate}`;
       const draft = localStorage.getItem(draftKey);
       if (draft) {
         try {
           const parsed = JSON.parse(draft);
-          Object.entries(parsed).forEach(([id, status]) => {
-            if (status !== null && attendanceMap[id] === null) attendanceMap[id] = status;
-          });
-        } catch (_) { }
+          const validIds = new Set(students.map(student => student.id));
+          const marks = Object.fromEntries(Object.entries(parsed).filter(([id, status]) =>
+            validIds.has(id) && (status === 'present' || status === 'absent')));
+          if (Object.keys(marks).length) queueMarks(userId, courseId, currentDate, marks);
+        } catch { /* Leave a malformed draft for manual recovery. */ }
+        localStorage.removeItem(draftKey);
       }
+      Object.assign(attendanceMap, pendingMarks(userId, courseId, currentDate));
 
       return {
-        courseName: courseRes.data?.name || '',
-        students: studentsRes.data || [],
+        courseName,
+        userId,
+        students,
         attendance: attendanceMap
       };
-    } catch (err) {
-      throw err;
-    }
   };
 
   const { data, error: swrError, mutate, isLoading, isValidating } = useSWR(`attendance_${courseId}_${currentDate}`, fetcher);
@@ -78,7 +99,7 @@ export default function AttendancePage() {
   useEffect(() => {
     if (isValidating && !data) { attLoadingBarActive.current = true; loadingBar?.start(); }
     else if (!isValidating && attLoadingBarActive.current) { attLoadingBarActive.current = false; loadingBar?.done(); }
-  }, [isValidating]);
+  }, [isValidating, data, loadingBar]);
 
   const courseName = data?.courseName || '';
   const students = data?.students || [];
@@ -87,9 +108,18 @@ export default function AttendancePage() {
   const error = swrError?.message || localError;
 
   // ── Refs ──────────────────────────────────────────────────────────────────
-  const pendingUpdates = useRef({});
-  const saveTimeout = useRef(null);
-  const loadingBarStarted = useRef(false);
+  const userId = data?.userId;
+  useEffect(() => {
+    const refresh = () => setSaveState(queueState(userId, courseId, currentDate));
+    refresh();
+    window.addEventListener('attendance-queue-change', refresh);
+    window.addEventListener('online', refresh);
+    if (userId) resumeQueuedMarks(userId);
+    return () => {
+      window.removeEventListener('attendance-queue-change', refresh);
+      window.removeEventListener('online', refresh);
+    };
+  }, [userId, courseId, currentDate]);
 
   // ── Supabase Realtime: sync attendance from other sessions ────────────────
   useEffect(() => {
@@ -104,8 +134,16 @@ export default function AttendancePage() {
         if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
           const { student_id, status, date } = payload.new;
           if (date === currentDate) {
-            mutate(prev => prev ? { ...prev, attendance: { ...prev.attendance, [student_id]: status } } : prev, false);
+            mutate(prev => {
+              if (!prev) return prev;
+              const pending = pendingMarks(prev.userId, courseId, currentDate);
+              return { ...prev, attendance: {
+                ...prev.attendance, [student_id]: Object.hasOwn(pending, student_id) ? pending[student_id] : status,
+              } };
+            }, false);
           }
+        } else if (payload.eventType === 'DELETE') {
+          mutate();
         }
       })
       .subscribe();
@@ -114,80 +152,57 @@ export default function AttendancePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId, currentDate]);
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  const handleToggle = (studentId, status) => {
+    if (!userId) return;
+    const newAttendance = { ...attendance, [studentId]: status };
+    try {
+      queueMarks(userId, courseId, currentDate, { [studentId]: status });
+      if (data) mutate({ ...data, attendance: newAttendance }, false);
+      setLastBulkSnapshot(null);
+      setLocalError(null);
+      const wasComplete = students.every(student => attendance[student.id]);
+      const nowComplete = students.every(student => newAttendance[student.id]);
+      if (nowComplete && !wasComplete) playSuccess();
+      else if (status === 'present') playPresent();
+      else playAbsent();
+    } catch (error) { setLocalError(error.message); }
+  };
+
+  const handleBulkAction = (status) => {
+    if (!userId || !students.length) return;
+    const newAttendance = {};
+    students.forEach(student => {
+      newAttendance[student.id] = status;
+    });
+    try {
+      queueMarks(userId, courseId, currentDate, newAttendance);
+      if (data) mutate({ ...data, attendance: newAttendance }, false);
+      setLastBulkSnapshot({ date: currentDate, attendance: { ...attendance } });
+      setLocalError(null);
+      if (status === 'present') playSuccess(); else playAbsent();
+    } catch (error) { setLocalError(error.message); }
+  };
+
+  const undoBulkAction = () => {
+    if (!lastBulkSnapshot || lastBulkSnapshot.date !== currentDate || !userId) return;
+    try {
+      queueMarks(userId, courseId, currentDate, lastBulkSnapshot.attendance);
+      if (data) mutate({ ...data, attendance: lastBulkSnapshot.attendance }, false);
+      setLastBulkSnapshot(null);
+      setLocalError(null);
+    } catch (error) { setLocalError(error.message); }
+  };
+
   useEffect(() => {
-    const handleKeyDown = (e) => {
-      // Escape → close leave-confirm modal
-      if (e.key === 'Escape' && showLeaveConfirm) {
-        setShowLeaveConfirm(false);
-      }
-      // Ctrl/Cmd + Enter → mark all present
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        e.preventDefault();
+    const handleKeyDown = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !showLeaveConfirm) {
+        event.preventDefault();
         handleBulkAction('present');
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showLeaveConfirm]);
-
-  // Clean up timeout on unmount
-  useEffect(() => {
-    return () => { if (saveTimeout.current) clearTimeout(saveTimeout.current); };
-  }, []);
-
-  const triggerDebouncedSave = () => {
-    if (saveTimeout.current) clearTimeout(saveTimeout.current);
-    setIsSaving(true);
-    setLocalError(null);
-
-    saveTimeout.current = setTimeout(async () => {
-      const updates = Object.entries(pendingUpdates.current).map(([studentId, status]) => ({
-        course_id: courseId,
-        student_id: studentId,
-        date: currentDate,
-        status: status
-      }));
-
-      if (updates.length > 0) {
-        const { error } = await supabase
-          .from('attendance')
-          .upsert(updates, { onConflict: 'course_id, student_id, date' });
-
-        if (error) {
-          console.error('Failed to save attendance:', error);
-          setLocalError('Failed to save some attendance records.');
-        } else {
-          pendingUpdates.current = {};
-          // Clear draft once successfully persisted to DB
-          localStorage.removeItem(`att_draft_${courseId}_${currentDate}`);
-        }
-      }
-      setIsSaving(false);
-    }, 600);
-  };
-
-  const handleToggle = (studentId, status) => {
-    const newAttendance = { ...attendance, [studentId]: status };
-    if (data) mutate({ ...data, attendance: newAttendance }, false);
-    pendingUpdates.current[studentId] = status;
-
-    // Persist draft so a browser crash / accidental close doesn't lose work
-    localStorage.setItem(`att_draft_${courseId}_${currentDate}`, JSON.stringify(newAttendance));
-
-    triggerDebouncedSave();
-  };
-
-  const handleBulkAction = (status) => {
-    const newAttendance = {};
-    students.forEach(student => {
-      newAttendance[student.id] = status;
-      pendingUpdates.current[student.id] = status;
-    });
-    if (data) mutate({ ...data, attendance: newAttendance }, false);
-    triggerDebouncedSave();
-  };
+  });
 
   const checkUnsavedAndProceed = (callback) => {
     const hasUnrecorded = Object.values(attendance).some(val => val === null || val === undefined);
@@ -199,12 +214,20 @@ export default function AttendancePage() {
     }
   };
 
+  const selectDate = (date) => {
+    setCurrentDate(date);
+    setLastBulkSnapshot(null);
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous);
+      next.set('date', date);
+      return next;
+    }, { replace: true });
+  };
+
   const handleDateChange = (e) => {
     if (e.target.value) {
       const newDate = e.target.value;
-      checkUnsavedAndProceed(() => {
-        setCurrentDate(newDate);
-      });
+      checkUnsavedAndProceed(() => selectDate(newDate));
     }
   };
 
@@ -212,267 +235,222 @@ export default function AttendancePage() {
     checkUnsavedAndProceed(() => {
       const d = new Date(currentDate + 'T00:00:00'); // parse as local to avoid offset bugs
       d.setDate(d.getDate() + days);
-      setCurrentDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+      selectDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
     });
   };
 
-  // Date formatting for display
-  const displayDate = new Date(currentDate + 'T00:00:00').toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric'
-  });
-
   const presentCount = Object.values(attendance).filter(s => s === 'present').length;
   const absentCount = Object.values(attendance).filter(s => s === 'absent').length;
+  const unmarkedCount = Math.max(0, students.length - presentCount - absentCount);
 
   const filteredStudents = students.filter(student =>
-    student.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    student.reg_number.toLowerCase().includes(searchQuery.toLowerCase())
+    (!unmarkedOnly || !attendance[student.id]) &&
+    (student.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    student.reg_number.toLowerCase().includes(searchQuery.toLowerCase()))
   );
+
+  const todayDate = new Date();
+  const todayStr = `${todayDate.getFullYear()}-${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}`;
+  const isToday = currentDate === todayStr;
+  const dateLabel = new Date(currentDate + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+  const markedCount = students.length - unmarkedCount;
+  const complete = unmarkedCount === 0 && students.length > 0;
+  const saveLabel = saveState.error ? 'Not synced' : saveState.saving ? 'Saving…' : saveState.pending ? 'Waiting to sync' : 'All saved';
 
   return (
     <Layout>
       <motion.div
-        initial={{ opacity: 0, y: 20 }}
+        initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -12 }}
+        exit={{ opacity: 0 }}
         transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
       >
-        {/* Top Section */}
-        <div className="flex items-center justify-between mb-6">
-          <motion.button
-            onClick={() => checkUnsavedAndProceed(() => navigate('/dashboard'))}
-            whileHover={{ x: -2 }}
-            whileTap={{ scale: 0.97 }}
-            className="flex items-center gap-1.5 text-sm font-bold text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white transition-colors"
-          >
-            <ArrowLeft size={16} />
-            Back to Courses
-          </motion.button>
+        <CourseHeader
+          courseId={courseId}
+          courseName={courseName}
+          summary={students.length ? `Roll call · ${students.length} ${students.length === 1 ? 'student' : 'students'}` : 'Roll call'}
+          onBack={() => checkUnsavedAndProceed(() => navigate('/dashboard'))}
+          actions={
+            <div role="status" aria-live="polite"
+              className={`inline-flex items-center gap-2 rounded-full border-2 px-3 py-1.5 text-xs font-bold ${saveState.error
+                ? 'border-amber-500 bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200'
+                : 'border-black/15 bg-white text-gray-700 dark:border-white/20 dark:bg-[#171717] dark:text-gray-200'}`}>
+              <span aria-hidden="true" className={`h-2 w-2 rounded-full ${saveState.error ? 'bg-amber-500' : saveState.saving || saveState.pending ? 'animate-pulse bg-yellow-500' : 'bg-green-600'}`} />
+              {saveLabel}
+            </div>
+          }
+        />
 
-          <AnimatePresence>
-            {isSaving && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: [0, 1, 0] }}
-                transition={{ duration: 1.5, repeat: Infinity }}
-                className="text-xs font-bold text-gray-400"
-              >
-                Saving...
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {error && (
-          <div className="bg-red-100 border-2 border-red-500 text-red-700 font-bold px-4 py-2 rounded-xl text-sm mb-4 inline-block">
-            {error}
+        {error && <div role="alert" className="alert-error mb-4">{error}</div>}
+        {saveState.error && (
+          <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border-2 border-amber-500 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900 dark:bg-amber-950/60 dark:text-amber-100">
+            <span>{saveState.error} Your marks are kept on this phone.</span>
+            <button className="btn-secondary min-h-[36px] px-3 text-xs" onClick={() => flushMarks(userId, courseId, currentDate)}>Retry now</button>
           </div>
         )}
 
-        <div>
-          {courseName && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.25 }}
-              className="bg-[#b9ff66] border border-black text-black text-xs font-bold px-3 py-1 rounded-full inline-block mb-3"
-            >
-              {courseName}
-            </motion.div>
-          )}
-          <h1 className="text-4xl font-black text-gray-900 dark:text-white tracking-tight">
-            Attendance
-          </h1>
-        </div>
-
-        {/* Empty State vs Content */}
         {!loading && students.length === 0 ? (
-          <div className="border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-2xl p-12 text-center mt-6 flex flex-col items-center justify-center">
-            <Users size={32} className="text-gray-400 mb-3" />
-            <h3 className="font-black text-gray-400 text-lg">No students enrolled</h3>
-            <p className="text-sm text-gray-400 mt-1 mb-5">Go to the Students page to add students first</p>
-            <motion.button
-              whileTap={{ scale: 0.97 }}
-              onClick={() => navigate(`/courses/${courseId}/students`)}
-              className="bg-[#b9ff66] border-2 border-black text-black font-bold px-5 py-2.5 rounded-xl hover:bg-black hover:text-[#b9ff66] transition-all duration-150 text-sm"
-            >
-              Add Students →
-            </motion.button>
+          <div className="panel flex flex-col items-center px-6 py-12 text-center">
+            <span className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-black bg-[#b9ff66] text-black">
+              <Users size={26} />
+            </span>
+            <h2 className="text-xl font-extrabold text-gray-900 dark:text-white">No students in this course yet</h2>
+            <p className="mt-1 max-w-xs text-sm text-gray-600 dark:text-gray-400">Add your class list first, then come back to take the roll call.</p>
+            <Link to={`/courses/${courseId}/students`} className="btn-primary mt-6 px-6">Add students</Link>
           </div>
         ) : (
           <>
-            {/* Date Selector Bar */}
-            <div className="border-2 border-black dark:border-white rounded-2xl bg-white dark:bg-[#111111] p-4 mt-6 flex items-center justify-between gap-4">
-              <style>
-                {`
-                  .date-input::-webkit-calendar-picker-indicator {
-                    filter: invert(0);
-                    cursor: pointer;
-                    opacity: 0.6;
-                  }
-                  .dark .date-input::-webkit-calendar-picker-indicator {
-                    filter: invert(1);
-                  }
-                `}
-              </style>
+            {/* Date */}
+            <div className="panel flex items-center gap-2 p-2">
+              <button type="button" onClick={() => changeDays(-1)} aria-label="Previous day" className="icon-btn">
+                <ChevronLeft size={22} />
+              </button>
+              <label className="relative flex min-w-0 flex-1 cursor-pointer flex-col items-center justify-center rounded-xl px-2 py-1 text-center hover:bg-black/5 dark:hover:bg-white/5">
+                <span className="text-[11px] font-bold uppercase tracking-wide text-gray-500 dark:text-gray-400">{isToday ? 'Today' : 'Date'}</span>
+                <span className="truncate font-display text-base font-extrabold text-gray-900 dark:text-white sm:text-lg">{dateLabel}</span>
+                <input
+                  type="date"
+                  aria-label="Attendance date"
+                  value={currentDate}
+                  onChange={handleDateChange}
+                  onClick={event => { try { event.currentTarget.showPicker?.(); } catch { /* not supported */ } }}
+                  className="date-input absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                />
+              </label>
+              <button type="button" onClick={() => changeDays(1)} aria-label="Next day" className="icon-btn">
+                <ChevronRight size={22} />
+              </button>
+            </div>
+            {!isToday && (
+              <button type="button" onClick={() => checkUnsavedAndProceed(() => selectDate(todayStr))}
+                className="mt-2 text-xs font-bold text-gray-700 underline underline-offset-4 dark:text-gray-300">
+                Jump to today
+              </button>
+            )}
 
-              <div className="flex items-center gap-1 flex-1">
-                <motion.button
-                  whileHover={{ x: -2 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => changeDays(-1)}
-                  className="border-2 border-black dark:border-white rounded-xl p-2 hover:bg-[#b9ff66] hover:border-black dark:hover:border-black transition-all text-gray-900 dark:text-white"
-                >
-                  <ChevronLeft size={20} />
-                </motion.button>
-
-                <div className="flex-1 flex justify-center">
-                  <input
-                    type="date"
-                    value={currentDate}
-                    onChange={handleDateChange}
-                    className="bg-transparent border-none outline-none font-black text-lg text-gray-900 dark:text-white text-center cursor-pointer w-48 date-input"
-                  />
-                </div>
-
-                <motion.button
-                  whileHover={{ x: 2 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => changeDays(1)}
-                  className="border-2 border-black dark:border-white rounded-xl p-2 hover:bg-[#b9ff66] hover:border-black dark:hover:border-black transition-all text-gray-900 dark:text-white"
-                >
-                  <ChevronRight size={20} />
-                </motion.button>
+            {/* Progress — stays visible while scrolling the list */}
+            <div role="status"
+              className={`sticky top-[calc(3.5rem+env(safe-area-inset-top)+0.5rem)] z-30 mt-3 rounded-2xl border-2 px-4 py-3 transition-colors md:top-[4.5rem] ${complete
+                ? 'border-black bg-[#b9ff66] text-black'
+                : 'border-black bg-white text-gray-900 dark:border-white/85 dark:bg-[#141812] dark:text-white'}`}>
+              <div className="flex items-baseline justify-between gap-3">
+                <strong className="font-display text-base font-extrabold">
+                  {complete ? 'Roll call complete' : `${unmarkedCount} left to mark`}
+                </strong>
+                <span className="text-sm font-bold tabular-nums">{markedCount}/{students.length}</span>
+              </div>
+              <div className={`mt-2 h-2 overflow-hidden rounded-full ${complete ? 'bg-black/15' : 'bg-black/10 dark:bg-white/15'}`} aria-hidden="true">
+                <div className={`h-full rounded-full transition-[width] duration-300 ${complete ? 'bg-black' : 'bg-[#6b9d28] dark:bg-[#b9ff66]'}`}
+                  style={{ width: `${students.length ? (markedCount / students.length) * 100 : 0}%` }} />
+              </div>
+              <div className={`mt-2 flex gap-4 text-xs font-bold ${complete ? 'text-black/75' : 'text-gray-600 dark:text-gray-300'}`}>
+                <span className="inline-flex items-center gap-1"><Check size={13} strokeWidth={3} className={complete ? '' : 'text-[#4d7a16] dark:text-[#b9ff66]'} />{presentCount} present</span>
+                <span className="inline-flex items-center gap-1"><X size={13} strokeWidth={3} className={complete ? '' : 'text-red-600 dark:text-red-400'} />{absentCount} absent</span>
               </div>
             </div>
 
-            {/* Summary Bar */}
-            <div className="mt-3 flex gap-3 flex-wrap">
-              <div className="bg-[#b9ff66] border-2 border-black rounded-xl px-4 py-2 text-sm font-black text-black">
-                ✓ {presentCount} Present
-              </div>
-              <div className="bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-xl px-4 py-2 text-sm font-black text-gray-900 dark:text-white">
-                ✗ {absentCount} Absent
-              </div>
+            {/* Search, filter, bulk */}
+            <div className="mt-3 flex gap-2">
+              <label className="relative min-w-0 flex-1">
+                <Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
+                <input
+                  type="search"
+                  aria-label="Search students"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search name or reg no."
+                  className="field pl-10"
+                />
+              </label>
+              <button type="button" aria-pressed={unmarkedOnly} onClick={() => setUnmarkedOnly(value => !value)}
+                className={`btn px-3 ${unmarkedOnly
+                  ? 'border-black bg-black text-[#b9ff66] dark:border-[#b9ff66] dark:bg-[#b9ff66] dark:text-black'
+                  : 'border-black bg-white text-gray-900 dark:border-white/80 dark:bg-[#111] dark:text-white'}`}>
+                Unmarked
+              </button>
             </div>
-
-            {/* Bulk Action Buttons & Search */}
-            <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex gap-3 flex-wrap">
-                <button
-                  onClick={() => handleBulkAction('present')}
-                  className="border-2 border-black dark:border-white rounded-xl px-4 py-2 text-xs font-bold hover:bg-[#b9ff66] hover:border-black dark:hover:border-[#b9ff66] transition-all text-gray-900 dark:text-white"
-                >
-                  All Present
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button onClick={() => handleBulkAction('present')} className="btn-quiet min-h-[40px] border-black/15 px-3 text-xs dark:border-white/20">
+                <Check size={15} strokeWidth={2.75} /> All present
+              </button>
+              <button onClick={() => handleBulkAction('absent')} className="btn-quiet min-h-[40px] border-black/15 px-3 text-xs dark:border-white/20">
+                <X size={15} strokeWidth={2.75} /> All absent
+              </button>
+              {lastBulkSnapshot?.date === currentDate && (
+                <button type="button" onClick={undoBulkAction} className="btn-quiet min-h-[40px] px-3 text-xs underline underline-offset-4">
+                  <Undo2 size={14} /> Undo
                 </button>
-                <button
-                  onClick={() => handleBulkAction('absent')}
-                  className="border-2 border-black dark:border-white rounded-xl px-4 py-2 text-xs font-bold hover:bg-[#b9ff66] hover:border-black dark:hover:border-[#b9ff66] transition-all text-gray-900 dark:text-white"
-                >
-                  All Absent
-                </button>
-              </div>
-
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search students..."
-                className="w-full sm:w-64 px-4 py-2.5 rounded-xl border-2 border-black dark:border-white bg-white dark:bg-[#111111] text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:border-[#b9ff66] font-medium text-sm transition-colors"
-              />
+              )}
+              <span className="ml-auto hidden text-xs text-gray-500 dark:text-gray-400 md:inline">Ctrl + Enter marks everyone present</span>
             </div>
 
             {/* Student List */}
             <AnimatePresence mode="wait">
               {loading ? (
-                <motion.div
-                  key="skeleton"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0, scale: 0.98 }}
-                  transition={{ duration: 0.2 }}
-                  className="mt-4 flex flex-col gap-2"
-                >
-                  {[1, 2, 3, 4, 5].map(i => (
-                    <div key={i} className="animate-pulse bg-gray-200 dark:bg-gray-800 rounded-2xl h-16 w-full mb-2" />
+                <motion.div key="skeleton" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  className="mt-4 flex flex-col gap-2">
+                  {[1, 2, 3, 4, 5, 6].map(i => (
+                    <div key={i} className="h-[68px] w-full animate-pulse rounded-2xl bg-black/[0.06] dark:bg-white/[0.06]" />
                   ))}
                 </motion.div>
               ) : (
-                <motion.div
-                  key="list"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="mt-4 flex flex-col gap-2"
-                >
-                  <AnimatePresence>
-                    {filteredStudents.map((student, index) => {
-                      const status = attendance[student.id];
-                      const isPresent = status === 'present';
-                      const isAbsent = status === 'absent';
+                <motion.ul key="list" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  className="mt-4 flex flex-col gap-2" aria-label="Students">
+                  {filteredStudents.map((student) => {
+                    const status = attendance[student.id];
+                    const isPresent = status === 'present';
+                    const isAbsent = status === 'absent';
 
-                      return (
-                        <motion.div
-                          layout
-                          key={student.id}
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, scale: 0.95 }}
-                          transition={{ duration: 0.2, delay: index * 0.03, ease: [0.22, 1, 0.36, 1] }}
-                          className={`rounded-2xl border-2 transition-all duration-150 px-5 py-4 flex items-center justify-between ${isPresent
-                              ? 'border-[#b9ff66] bg-[#f9ffe8] dark:bg-[#1a2a0a]'
-                              : 'border-black dark:border-white bg-white dark:bg-[#111111]'
-                            }`}
-                        >
-                          <div>
-                            <h3 className="font-bold text-gray-900 dark:text-white text-sm">
-                              {student.name}
-                            </h3>
-                            <p className="text-xs font-medium text-gray-400 mt-0.5">
-                              {student.reg_number}
-                            </p>
-                          </div>
+                    return (
+                      <li
+                        key={student.id}
+                        className={`flex items-center gap-3 rounded-2xl border-2 py-2.5 pl-4 pr-2.5 transition-colors duration-150 ${isPresent
+                          ? 'border-[#6b9d28] bg-[#f3ffe0] dark:border-[#b9ff66]/70 dark:bg-[#18240c]'
+                          : isAbsent
+                            ? 'border-red-300 bg-red-50 dark:border-red-500/50 dark:bg-red-950/30'
+                            : 'border-black/80 bg-white dark:border-white/70 dark:bg-[#111]'}`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[15px] font-bold leading-tight text-gray-900 dark:text-white">{student.name}</p>
+                          <p className="mt-0.5 truncate text-xs font-medium tabular-nums text-gray-600 dark:text-gray-400">{student.reg_number}</p>
+                        </div>
 
-                          <div className="flex items-center gap-2">
-                            <motion.button
-                              whileHover={{ scale: 1.05 }}
-                              whileTap={{ scale: 0.95 }}
-                              onClick={() => handleToggle(student.id, 'present')}
-                              className={
-                                isPresent
-                                  ? 'bg-[#b9ff66] border-2 border-black text-black font-bold text-xs px-4 py-1.5 rounded-xl'
-                                  : 'bg-transparent border-2 border-gray-300 dark:border-gray-600 text-gray-400 font-bold text-xs px-4 py-1.5 rounded-xl hover:border-black dark:hover:border-white transition-all'
-                              }
-                            >
-                              P
-                            </motion.button>
-                            <motion.button
-                              whileHover={{ scale: 1.05 }}
-                              whileTap={{ scale: 0.95 }}
-                              onClick={() => handleToggle(student.id, 'absent')}
-                              className={
-                                isAbsent
-                                  ? 'bg-black dark:bg-white border-2 border-black dark:border-white text-white dark:text-black font-bold text-xs px-4 py-1.5 rounded-xl'
-                                  : 'bg-transparent border-2 border-gray-300 dark:border-gray-600 text-gray-400 font-bold text-xs px-4 py-1.5 rounded-xl hover:border-black dark:hover:border-white transition-all'
-                              }
-                            >
-                              A
-                            </motion.button>
-                          </div>
-                        </motion.div>
-                      );
-                    })}
-                  </AnimatePresence>
+                        <div className="flex flex-none items-center gap-1.5">
+                          <motion.button
+                            whileTap={{ scale: 0.9 }}
+                            onClick={() => handleToggle(student.id, 'present')}
+                            aria-label={`Mark ${student.name} present`}
+                            aria-pressed={isPresent}
+                            className={`flex h-12 min-w-12 items-center justify-center gap-1.5 rounded-xl border-2 px-3 text-sm font-bold transition-colors ${isPresent
+                              ? 'border-black bg-[#b9ff66] text-black'
+                              : 'border-black/25 bg-white text-gray-700 hover:border-black dark:border-white/30 dark:bg-transparent dark:text-gray-200 dark:hover:border-white'}`}
+                          >
+                            <Check size={20} strokeWidth={3} />
+                            <span className="hidden sm:inline">Present</span>
+                          </motion.button>
+                          <motion.button
+                            whileTap={{ scale: 0.9 }}
+                            onClick={() => handleToggle(student.id, 'absent')}
+                            aria-label={`Mark ${student.name} absent`}
+                            aria-pressed={isAbsent}
+                            className={`flex h-12 min-w-12 items-center justify-center gap-1.5 rounded-xl border-2 px-3 text-sm font-bold transition-colors ${isAbsent
+                              ? 'border-red-700 bg-red-500 text-white dark:border-red-300'
+                              : 'border-black/25 bg-white text-gray-700 hover:border-black dark:border-white/30 dark:bg-transparent dark:text-gray-200 dark:hover:border-white'}`}
+                          >
+                            <X size={20} strokeWidth={3} />
+                            <span className="hidden sm:inline">Absent</span>
+                          </motion.button>
+                        </div>
+                      </li>
+                    );
+                  })}
 
                   {filteredStudents.length === 0 && students.length > 0 && (
-                    <div className="text-center py-8 text-sm font-bold text-gray-400">
-                      No students match your search.
-                    </div>
+                    <li className="panel-soft px-4 py-8 text-center text-sm font-semibold text-gray-600 dark:text-gray-400">
+                      {unmarkedOnly && unmarkedCount === 0 ? 'Everyone is marked for this date.' : 'No students match this search.'}
+                    </li>
                   )}
-                </motion.div>
+                </motion.ul>
               )}
             </AnimatePresence>
           </>
@@ -481,50 +459,47 @@ export default function AttendancePage() {
 
       <AnimatePresence>
         {showLeaveConfirm && (
-          <>
+          <motion.div
+            className="sheet-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowLeaveConfirm(false)}
+          >
             <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 pointer-events-none rounded-xl"
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: '-40%', x: '-50%' }}
-              animate={{ opacity: 1, scale: 1, y: '-50%', x: '-50%' }}
-              exit={{ opacity: 0, scale: 0.95, y: '-40%', x: '-50%' }}
-              className="fixed top-1/2 left-1/2 w-[90%] max-w-sm bg-white dark:bg-[#111111] border-2 border-black dark:border-white rounded-2xl p-6 z-[60] shadow-2xl pointer-events-auto"
+              ref={leaveDialogRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="leave-dialog-title"
+              tabIndex={-1}
+              initial={{ y: 40, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 40, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              onClick={event => event.stopPropagation()}
+              className="sheet"
             >
-              <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">Wait a second!</h3>
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-6">
-                You have students with unrecorded attendance. Are you sure you want to leave this day without finishing?
+              <div className="sheet-handle" />
+              <h3 id="leave-dialog-title" className="text-xl font-extrabold text-gray-900 dark:text-white">Leave with {unmarkedCount} unmarked?</h3>
+              <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                Marks you already made are saved. You can come back and finish the rest later.
               </p>
-
-              <div className="flex gap-3 mt-4">
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  onClick={() => setShowLeaveConfirm(false)}
-                  className="flex-1 border-2 border-gray-300 dark:border-gray-600 rounded-xl py-2.5 font-bold text-gray-600 dark:text-gray-300 hover:border-black dark:hover:border-white hover:text-black dark:hover:text-white transition-colors"
-                >
-                  Stay and Finish
-                </motion.button>
-                <motion.button
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
+              <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row">
+                <button onClick={() => setShowLeaveConfirm(false)} className="btn-primary flex-1">Keep marking</button>
+                <button
                   onClick={() => {
                     setShowLeaveConfirm(false);
                     if (pendingAction) pendingAction();
                   }}
-                  className="flex-1 bg-red-50 dark:bg-red-950/30 border-2 border-red-500 rounded-xl py-2.5 font-bold text-red-600 hover:bg-red-500 hover:text-white transition-colors"
+                  className="btn-secondary flex-1"
                 >
-                  Yes, Leave
-                </motion.button>
+                  Leave anyway
+                </button>
               </div>
             </motion.div>
-          </>
+          </motion.div>
         )}
       </AnimatePresence>
-
     </Layout>
   );
 }
